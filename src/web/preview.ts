@@ -88,7 +88,14 @@ export class Player {
     this.sceneRanges = sceneOutputRanges(p.scenes, this.tl);
     this.stage.style.background = p.export.bgColor;
     this.capKey = '';
-    this.layer = this.layer && this.layerKey(this.layer.scene, p) === this.layer.key ? this.layer : null;
+    if (this.layer) {
+      const cur = p.scenes.find((s) => s.id === this.layer!.scene.id);
+      if (!cur || this.layerKey(cur, p) !== this.layer.key) {
+        this.layer.video?.pause();
+        this.layer.el.remove();
+        this.layer = null;
+      }
+    }
     this.fit();
     void this.refreshAudio(p);
     this.refreshBgm(p);

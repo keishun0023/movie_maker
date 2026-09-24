@@ -94,7 +94,7 @@ function scenesView(seek: (t: number) => void): HTMLElement {
     const r = ranges[i]!;
     const dur = (r.outEnd - r.outStart) / SR;
     const asset = s.bg ? p.assets.find((a) => a.id === s.bg!.assetId) : null;
-    const texts = caps.filter((c) => c.outStart < r.outEnd && c.outEnd > r.outStart).map((c) => capById.get(c.id)?.text ?? '');
+    const texts = caps.filter((c) => { const m = (c.outStart + c.outEnd) / 2; return m >= r.outStart && m < r.outEnd; }).map((c) => capById.get(c.id)?.text ?? '');
     const card = h(
       'div',
       { class: 'scene-card' + (sel?.kind === 'scene' && sel.id === s.id ? ' selected' : '') + (dur <= 0 ? ' empty' : '') },
