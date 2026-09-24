@@ -135,8 +135,11 @@ export function autoEdit(p: Project, a: AnalysisData, opt: AutoEditOptions = { k
   const tokens = next.transcript?.tokens ?? [];
   let caps = snapCaptionsToSpeech(buildCaptions(tokens, tl, segmentOptionsFor(next)), a, next.cut.params.sensitivityDb);
   if (opt.keepManual) caps = mergeCaptions(p.captions, caps);
-  let scenes = buildScenes(caps, tl, dur, DEFAULT_SEGMENT_OPTIONS);
-  if (opt.keepManual) scenes = carryOverScenes(p.scenes, scenes);
+  // シーン境界を手で直している場合は境界を保持する。素材の割り当ては常に引き継ぐ
+  const manualScenes = opt.keepManual && p.scenes.length > 1 && p.scenes.some((s) => s.boundaryEdited);
+  const scenes = manualScenes
+    ? normalizeScenes(p.scenes, dur)
+    : carryOverScenes(p.scenes, buildScenes(caps, tl, dur, DEFAULT_SEGMENT_OPTIONS));
   return { ...next, captions: markCaptionReview(caps, tl), scenes };
 }
 

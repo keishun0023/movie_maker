@@ -25,7 +25,9 @@ export const DEFAULT_SEGMENT_OPTIONS: SegmentOptions = {
 
 const SENTENCE_END = /[。！？!?]$/;
 const COMMA_END = /[、，,]$/;
-const CONJ_PARTICLE_END = /(けど|けれど|けれども|から|ので|のに|たら|なら|ながら|し|が|て|で|ば)$/;
+const CONJ_PARTICLE_END = /(けど|けれど|けれども|から|ので|のに|たら|なら|ながら|が|て|で|ば)$/;
+/** 直前の語に付く助動詞・補助動詞など(この前では切らない) */
+const AUX_START = /^(ない|なか|なく|ます|まし|ませ|いる|いま|いた|いて|ある|あり|しま|ちゃ|くだ|られ|れる|れた|せる|せた|たい|そう|よう|らし|です|でし|だっ|だろ|じゃ|たら|たり|ても|ずに)/;
 const CASE_PARTICLE_END = /(は|を|に|へ|と|も|や)$/;
 const CONJ_START = /^(でも|だから|しかし|そして|なので|それで|ただ|実は|つまり|まず|次に|さらに|ちなみに|結局|要するに|ところが|それから|あと|なぜなら|例えば)/;
 
@@ -53,6 +55,7 @@ export function boundaryScore(tokens: Token[], i: number, tl: Timeline | null): 
   else if (CONJ_PARTICLE_END.test(at)) s += 3;
   else if (CASE_PARTICLE_END.test(at)) s += 1.5;
   if (CONJ_START.test(bt)) s += 3;
+  if (AUX_START.test(bt)) s -= 5;
   // 発話の間(元音声での隙間)
   const gap = (b.start - a.end) / SR;
   if (gap >= 0.3) s += 6;
@@ -67,7 +70,7 @@ export function boundaryScore(tokens: Token[], i: number, tl: Timeline | null): 
   else if (ca === 'kanji' && cb === 'kanji') s -= 2.5;
   else if (ca === 'kanji' && cb === 'hira') s -= 2;
   else if ((ca === 'latin' || ca === 'digit') && (cb === 'latin' || cb === 'digit')) s -= 5;
-  else if (ca === 'hira' && cb === 'hira' && s < 1) s -= 1.5;
+  else if (ca === 'hira' && cb === 'hira' && s < 1) s -= 2.5;
   return s;
 }
 
