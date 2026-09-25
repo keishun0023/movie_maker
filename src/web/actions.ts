@@ -215,16 +215,26 @@ export async function runAutoEdit(opts: { basis?: 'source' | 'edited' } = {}) {
   const p = store.p;
   const a = store.state.analysis;
   if (!p.narration || !a) return toast('先にナレーション音声を取り込んでください', 'error');
+  const gemini = p.asr.engine === 'gemini';
   const modelId = selectedModelId();
   const model = store.state.system?.models.find((m) => m.id === modelId);
-  if (!model) return toast('文字起こしモデルを選択してください', 'error');
-  if (!model.installed) return toast(`モデル「${model.label}」をダウンロードしてから実行してください`, 'error');
+  if (gemini) {
+    if (!p.asr.cloudConsent) return toast('音声を Gemini に送信することに同意してから実行してください', 'error');
+    if (opts.basis === 'edited') return toast('Gemini では「編集後の音声で再認識」は使えません(もう一度「自動編集を実行」してください)', 'error');
+  } else {
+    if (!model) return toast('文字起こしモデルを選択してください', 'error');
+    if (!model.installed) return toast(`モデル「${model.label}」をダウンロードしてから実行してください`, 'error');
+  }
   await store.save();
   let job: JobInfo;
   try {
     job = await api.transcribe(p.id, {
       sourceKey: p.narration.sourceKey,
-      modelId: model.id,
+      engine: p.asr.engine,
+      geminiModel: p.asr.geminiModel,
+      cloudConsent: p.asr.cloudConsent,
+      sensitivityDb: p.cut.params.sensitivityDb,
+      modelId: model?.id ?? '',
       dtw: p.asr.dtw,
       script: p.script,
       useHints: p.useScriptHints,

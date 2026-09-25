@@ -15,6 +15,9 @@ import { buildTimeline, identityTimeline, msToSamples, srcToOut } from './timema
 import { buildCaptions, buildScenes, carryOverScenes, DEFAULT_SEGMENT_OPTIONS, mergeCaptions, type SegmentOptions } from './segment.js';
 import { charsPerLineFor, DEFAULT_STYLE } from './captionRender.js';
 
+/** 初期値。画面でAPIから取得したモデル一覧に切り替えられる */
+export const DEFAULT_GEMINI_MODEL = 'gemini-2.5-flash';
+
 export function createProject(id: string, name: string): Project {
   const now = new Date().toISOString();
   return {
@@ -38,7 +41,7 @@ export function createProject(id: string, name: string): Project {
     mix: { narrationDb: 0 },
     export: { width: 1080, height: 1920, fps: 30, crf: 20, bgColor: '#161616', alsoWav: false, alsoSrt: false },
     safeArea: { show: false, topPct: 9, bottomPct: 22, rightPct: 14 },
-    asr: { quality: 'accuracy', model: null, dtw: false },
+    asr: { engine: 'whisper', quality: 'accuracy', model: null, dtw: false, geminiModel: DEFAULT_GEMINI_MODEL, cloudConsent: false },
   };
 }
 

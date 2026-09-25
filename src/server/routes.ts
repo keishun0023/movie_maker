@@ -2,7 +2,10 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import type { Asset, Project, StylePreset, Timeline, Transcript } from '../shared/types.js';
+import type { Asset, JobInfo, Project, StylePreset, Timeline, Transcript } from '../shared/types.js';
+import { speechChunks, tokensFromChunks } from '../shared/chunks.js';
+import { assertGeminiModel, geminiTranscribe, listGeminiModels } from './asr/gemini.js';
+import { geminiKey, geminiKeySource, setGeminiKey } from './secrets.js';
 import { outToSrc } from '../shared/timemap.js';
 import { hintTerms } from '../shared/script.js';
 import { buildPreview, importUpload, removeAssetFiles } from './assets.js';
@@ -17,6 +20,8 @@ import {
   asrWavPath,
   BROWSER_IMAGE_EXT,
   ensureEditedWav,
+  loadAnalysis,
+  readWav,
   loadSourcePcm,
   prepareNarration,
   proxyPath,
@@ -247,9 +252,82 @@ router.get('/api/projects/:id/analysis/:key', async (req, res) => {
   return sendFile(req, res, analysisPath(id, key), { type: 'application/json; charset=utf-8' });
 });
 
+// ---- 設定(APIキー) ----
+
+router.get('/api/settings', (_req, res) => sendJson(res, 200, { geminiKeySource: geminiKeySource() }));
+
+router.put('/api/settings/gemini-key', async (req, res) => {
+  const body = await readJson<{ key?: string | null }>(req);
+  const k = (body.key ?? '').trim();
+  if (k && !/^[A-Za-z0-9_\-]{20,200}$/.test(k)) throw new HttpError(400, 'APIキーの形式が正しくありません');
+  await setGeminiKey(k || null);
+  sendJson(res, 200, { geminiKeySource: geminiKeySource() });
+});
+
+router.get('/api/gemini/models', async (_req, res) => {
+  const k = geminiKey();
+  if (!k) throw new HttpError(400, 'Gemini の APIキーが設定されていません');
+  sendJson(res, 200, await listGeminiModels(k));
+});
+
+type TranscribeBody = {
+  sourceKey: string;
+  engine?: 'whisper' | 'gemini';
+  modelId: string;
+  geminiModel?: string;
+  cloudConsent?: boolean;
+  sensitivityDb?: number;
+  dtw: boolean;
+  script?: string;
+  useHints?: boolean;
+  basis?: 'source' | 'edited';
+  timeline?: Timeline;
+};
+
+function transcribeWithGemini(id: string, body: TranscribeBody): JobInfo {
+  const key = assertId(body.sourceKey);
+  const apiKey = geminiKey();
+  if (!apiKey) throw new HttpError(400, 'Gemini の APIキーが設定されていません。「自動編集」の画面で設定してください。');
+  if (body.cloudConsent !== true) throw new HttpError(400, '音声を Gemini に送信することへの同意が必要です。');
+  const model = assertGeminiModel(String(body.geminiModel ?? ''));
+  const hints = body.useHints && body.script ? hintTerms(body.script) : [];
+  const sens = Number(body.sensitivityDb ?? 0) || 0;
+  const cacheKey = crypto.createHash('sha1').update(JSON.stringify(['gemini', key, model, hints, sens, 1])).digest('hex').slice(0, 20);
+  const cacheFile = sub(id, 'cache', `asr-${cacheKey}.json`);
+  return enqueue({
+    type: 'transcribe',
+    label: `文字起こし (Gemini: ${model})`,
+    projectId: id,
+    queue: 'analysis',
+    runner: async (ctx) => {
+      if (fs.existsSync(cacheFile)) {
+        ctx.progress(1, '前回の認識結果を再利用しました');
+        return { transcript: JSON.parse(await fsp.readFile(cacheFile, 'utf8')) as Transcript, cached: true };
+      }
+      ctx.progress(0.02, '音声を無音で区切っています');
+      const analysis = await loadAnalysis(id, key);
+      const chunks = speechChunks(analysis, sens);
+      if (chunks.length === 0) throw new Error('発話のある区間が見つかりませんでした。');
+      const pcm = await readWav(asrWavPath(id, key));
+      const r = await geminiTranscribe({ pcm16k: pcm.data, chunks, model, apiKey, hints, signal: ctx.signal, progress: ctx.progress });
+      const tokens = tokensFromChunks(chunks, r.texts);
+      const notes = [
+        `Gemini (${model}) で ${chunks.length} 個の音声片を書き起こしました。`,
+        '時刻は無音で区切った音声片の境目(音量解析)を使い、音声片の中は文字量で推定しています。',
+      ];
+      if (r.missing.length) notes.push(`${r.missing.length} 個の音声片の結果が返りませんでした(該当箇所はテロップなし)。`);
+      if (hints.length) notes.push(`台本から認識ヒントを使用: ${hints.join('、')}`);
+      const transcript: Transcript = { engine: 'gemini', model, createdAt: new Date().toISOString(), basis: 'source', tokens, notes };
+      await atomicWrite(cacheFile, JSON.stringify(transcript));
+      return { transcript, cached: false };
+    },
+  });
+}
+
 router.post('/api/projects/:id/transcribe', async (req, res) => {
   const id = assertId(req.params.id!);
-  const body = await readJson<{ sourceKey: string; modelId: string; dtw: boolean; script?: string; useHints?: boolean; basis?: 'source' | 'edited'; timeline?: Timeline }>(req);
+  const body = await readJson<TranscribeBody>(req);
+  if (body.engine === 'gemini') return sendJson(res, 200, transcribeWithGemini(id, body));
   const key = assertId(body.sourceKey);
   const def = modelDef(body.modelId);
   if (!def) throw new HttpError(400, 'モデルが正しくありません');

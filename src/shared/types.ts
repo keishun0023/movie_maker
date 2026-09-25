@@ -76,7 +76,8 @@ export interface Token {
   /** whisper のセグメント番号 */
   seg: number;
   /** 時刻の出どころ。segment は区間単位しか取れなかったことを示す */
-  timing: 'token' | 'dtw' | 'segment';
+  /** chunk は無音で区切った音声片の中を文字量で配分した推定時刻(クラウド認識) */
+  timing: 'token' | 'dtw' | 'segment' | 'chunk';
   flags?: TokenFlag[];
 }
 
@@ -266,7 +267,16 @@ export interface Project {
   mix: { narrationDb: number };
   export: ExportSettings;
   safeArea: SafeAreaGuide;
-  asr: { quality: 'speed' | 'accuracy'; model: string | null; dtw: boolean };
+  asr: {
+    /** whisper: ローカル(whisper.cpp) / gemini: Google Gemini API(音声を送信する) */
+    engine: 'whisper' | 'gemini';
+    quality: 'speed' | 'accuracy';
+    model: string | null;
+    dtw: boolean;
+    geminiModel: string;
+    /** このプロジェクトの音声を Gemini に送ることに利用者が同意したか */
+    cloudConsent: boolean;
+  };
 }
 
 export interface StylePreset {

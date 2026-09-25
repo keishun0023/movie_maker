@@ -223,8 +223,9 @@ function autoView(player: Player): HTMLElement {
   const modelId = selectedModelId();
   const models = sys?.models ?? [];
   const model = models.find((m) => m.id === modelId);
-  const asrSection = section(
-    '文字起こし(ローカル)',
+  const whisperBox = h(
+    'div',
+    null,
     sys && !sys.asrAvailable ? h('p', { class: 'err' }, 'whisper.cpp が見つかりません。README のセットアップ手順(brew install whisper-cpp)を実行してください。') : null,
     h(
       'div',
@@ -249,9 +250,20 @@ function autoView(player: Player): HTMLElement {
     jobsBox(['model-download']),
     checkbox(p.asr.dtw, 'DTWでトークン時刻を推定する(実験的・精度が上がる場合があります)', (v) => store.commit((pp) => ({ ...pp, asr: { ...pp.asr, dtw: v } }))),
   );
+  const gemini = p.asr.engine === 'gemini';
+  const asrSection = section(
+    '文字起こし',
+    h(
+      'div',
+      { class: 'seg-buttons' },
+      h('button', { type: 'button', class: !gemini ? 'on' : '', onclick: () => store.commit((pp) => ({ ...pp, asr: { ...pp.asr, engine: 'whisper' } })) }, 'ローカル(whisper.cpp)'),
+      h('button', { type: 'button', class: gemini ? 'on' : '', onclick: () => store.commit((pp) => ({ ...pp, asr: { ...pp.asr, engine: 'gemini' } })) }, 'Gemini API(クラウド)'),
+    ),
+    gemini ? geminiBox(p) : whisperBox,
+  );
   const run = section(
     '実行',
-    button('自動編集を実行(文字起こし → カット → シーン・テロップ)', () => void runAutoEdit(), { class: 'primary big', disabled: !p.narration || !model?.installed }),
+    button('自動編集を実行(文字起こし → カット → シーン・テロップ)', () => void runAutoEdit(), { class: 'primary big', disabled: !p.narration || (gemini ? !p.asr.cloudConsent || !geminiState.keySource : !model?.installed) }),
     jobsBox(['transcribe']),
     p.transcript
       ? h(
@@ -267,12 +279,79 @@ function autoView(player: Player): HTMLElement {
           { class: 'row gap wrap' },
           button('テロップ・シーンを作り直す(手動修正は保持)', () => rebuildCaptions(true)),
           button('すべて作り直す', () => rebuildCaptions(false)),
-          button('編集後の音声で再認識', () => void runAutoEdit({ basis: 'edited' }), { title: '無音カット後の音声で認識し直し、時刻を元音声に戻して使います' }),
+          gemini ? null : button('編集後の音声で再認識', () => void runAutoEdit({ basis: 'edited' }), { title: '無音カット後の音声で認識し直し、時刻を元音声に戻して使います' }),
         )
       : null,
     h('p', { class: 'hint' }, 'ナレーションだけで字幕なしの動画や、手入力のテロップで作る場合は、文字起こしをせずに「3 確認して修正」へ進めます。'),
   );
   return h('div', { class: 'panel-body' }, cutSection, asrSection, run, button('次へ: 確認して修正 →', () => store.setUi({ step: 3 }), { class: 'next' }));
+}
+
+// Gemini の設定状態(APIキーそのものは画面に返さない)
+const geminiState: { loaded: boolean; keySource: 'env' | 'file' | null; models: string[]; loading: boolean } = { loaded: false, keySource: null, models: [], loading: false };
+
+function geminiBox(p: Project): HTMLElement {
+  if (!geminiState.loaded && !geminiState.loading) {
+    geminiState.loading = true;
+    void api.settings().then((r) => {
+      geminiState.keySource = r.geminiKeySource;
+      geminiState.loaded = true;
+      geminiState.loading = false;
+      store.emit('settings');
+    }).catch(() => (geminiState.loading = false));
+  }
+  const keyIn = h('input', { type: 'password', placeholder: 'AIza… (Google AI Studio で発行)', autocomplete: 'off' });
+  const saveKey = async (k: string | null) => {
+    try {
+      const r = await api.setGeminiKey(k);
+      geminiState.keySource = r.geminiKeySource;
+      toast(k ? 'APIキーを保存しました(このMacのデータフォルダに保存。プロジェクトには含めません)' : 'APIキーを削除しました', 'ok');
+      store.emit('settings');
+    } catch (e) {
+      toast((e as Error).message, 'error');
+    }
+  };
+  const models = geminiState.models.length ? geminiState.models : [p.asr.geminiModel];
+  if (!models.includes(p.asr.geminiModel)) models.unshift(p.asr.geminiModel);
+  return h(
+    'div',
+    null,
+    h('p', { class: 'hint' }, '日本語の聞き取り精度を上げたいときに使います。文字は Gemini、表示のタイミングは無音で区切った話の切れ目(音量解析)で決めます。利用料は Google の料金体系に従います(Claude の契約とは別です)。'),
+    section(
+      'APIキー',
+      geminiState.keySource === 'env'
+        ? h('div', { class: 'ok-box' }, '環境変数 GEMINI_API_KEY のキーを使います')
+        : geminiState.keySource === 'file'
+          ? h('div', { class: 'ok-box' }, '設定済み ', button('削除', () => void saveKey(null), { class: 'small' }))
+          : h('div', null, h('div', { class: 'row gap' }, keyIn, button('保存', () => void saveKey(keyIn.value.trim() || null), { class: 'primary' })), h('p', { class: 'hint' }, 'キーは https://aistudio.google.com/apikey で発行できます。project.json やログには保存しません。')),
+    ),
+    field(
+      'モデル',
+      h(
+        'div',
+        { class: 'row gap' },
+        select(p.asr.geminiModel, models.map((m) => [m, m] as [string, string]), (v) => store.commit((pp) => ({ ...pp, asr: { ...pp.asr, geminiModel: v } }))),
+        button('モデル一覧を取得', async () => {
+          try {
+            geminiState.models = await api.geminiModels();
+            store.emit('settings');
+          } catch (e) {
+            toast((e as Error).message, 'error');
+          }
+        }, { disabled: !geminiState.keySource }),
+      ),
+      'flash 系は速く安価、pro 系はより高精度です',
+    ),
+    h(
+      'div',
+      { class: 'note' },
+      h('b', null, '送信される内容: '),
+      'このプロジェクトのナレーション音声(無音で区切った音声片、16kHz モノラル)',
+      p.useScriptHints && p.script.trim() ? 'と、台本から抜き出した語句ヒント' : '',
+      '。背景の画像・動画・BGM は送信しません。',
+      checkbox(p.asr.cloudConsent, 'このプロジェクトの音声を Google Gemini API に送信することに同意する', (v) => store.commit((pp) => ({ ...pp, asr: { ...pp.asr, cloudConsent: v } }))),
+    ),
+  );
 }
 
 // ---------- 3. 確認して修正 ----------

@@ -73,7 +73,10 @@ export const api = {
   deleteAsset: (projectId: string, asset: Asset) => call<{ ok: boolean }>('DELETE', `/api/projects/${projectId}/assets/${asset.id}`, { asset }),
   prepareNarration: (projectId: string, asset: Asset, audioIndex: number) => call<JobInfo>('POST', `/api/projects/${projectId}/narration`, { asset, audioIndex }),
   analysis: (projectId: string, key: string) => call<AnalysisData>('GET', `/api/projects/${projectId}/analysis/${key}`),
-  transcribe: (projectId: string, body: { sourceKey: string; modelId: string; dtw: boolean; script?: string; useHints?: boolean; basis?: 'source' | 'edited'; timeline?: Timeline }) =>
+  settings: () => call<{ geminiKeySource: 'env' | 'file' | null }>('GET', '/api/settings'),
+  setGeminiKey: (key: string | null) => call<{ geminiKeySource: 'env' | 'file' | null }>('PUT', '/api/settings/gemini-key', { key }),
+  geminiModels: () => call<string[]>('GET', '/api/gemini/models'),
+  transcribe: (projectId: string, body: { sourceKey: string; engine: 'whisper' | 'gemini'; geminiModel: string; cloudConsent: boolean; sensitivityDb: number; modelId: string; dtw: boolean; script?: string; useHints?: boolean; basis?: 'source' | 'edited'; timeline?: Timeline }) =>
     call<JobInfo>('POST', `/api/projects/${projectId}/transcribe`, body),
   editedAudio: (projectId: string, sourceKey: string, timeline: Timeline) => call<{ url: string }>('POST', `/api/projects/${projectId}/edited-audio`, { sourceKey, timeline }),
   startExport: (projectId: string, project: Project, captions: { id: string; outStart: number; outEnd: number; text: string; png: string }[]) =>
