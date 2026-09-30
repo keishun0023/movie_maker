@@ -309,8 +309,8 @@ export interface Project {
     /** 冒頭 introSec 秒は、1カットを introMaxSec 秒以下にする(0 なら無効) */
     introSec?: number;
     introMaxSec?: number;
-    /** mix: 速いカットと遅いカットを織り交ぜる(メリハリ) */
-    rhythm?: 'even' | 'mix';
+    /** caption: テロップ1つ=1カット / even: 長さの目安で均等 / mix: 速いカットと遅いカットを織り交ぜる */
+    rhythm?: 'even' | 'mix' | 'caption';
   };
   /** テロップの長さ: normal(2行まで) / short(1行・短く区切る) */
   captionLen?: 'normal' | 'short';

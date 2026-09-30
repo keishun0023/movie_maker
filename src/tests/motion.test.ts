@@ -105,3 +105,38 @@ test('メリハリ: 冒頭は細かく、強調は速く、説明は長めで、
   });
   console.log('カットの長さ:', d.map((x) => x.toFixed(1)).join(' '));
 });
+
+test('短く区切る: 1行11文字までで、話の区切りごとにテロップを分ける(利用者の例)', async () => {
+  const { splitJaText } = await import('../shared/chunks.js');
+  const opt = { ...DEFAULT_SEGMENT_OPTIONS, charsPerLine: 11, maxLines: 1, captionMinSec: 0.5, captionMaxSec: 2.2 };
+  const cases: [string, string[]][] = [
+    ['色黒女子は全員これ使え！', ['色黒女子は', '全員これ使え！']],
+    ['白玉点滴とか美容医療に手出す前に、家でも白玉ケアできる白玉ビタミンC！', ['白玉点滴とか', '美容医療に手出す前に', '家でも白玉ケアできる', '白玉ビタミンC！']],
+    ['韓国でも話題の美容成分10種と', ['韓国でも', '話題の美容成分10種と']],
+    ['最後に家計簿アプリで支出を見える化しましょう', ['最後に家計簿アプリで', '支出を', '見える化しましょう']],
+  ];
+  for (const [text, want] of cases) {
+    let t = 0;
+    const toks: Token[] = splitJaText(text).map((w, i) => {
+      const d = Array.from(w).length * 0.1 * SR;
+      const o: Token = { id: `t${i}`, text: w, start: Math.round(t), end: Math.round(t + d), p: 0.9, seg: 0, timing: 'token' };
+      t += d;
+      return o;
+    });
+    assert.deepEqual(buildCaptions(toks, null, opt).map((c) => c.text), want);
+  }
+});
+
+test('テロップごとのカット割り: テロップ1つ=1カット、0.6秒未満のカットは隣とまとめる', async () => {
+  const { scenesPerCaption } = await import('../shared/segment.js');
+  const tl = buildTimeline(10 * SR, []);
+  const mk = (i: number, a: number, b: number) => ({ id: `c${i}`, srcStart: a * SR, srcEnd: b * SR, tokenIds: [], rawText: '', text: 'x', textEdited: false, timingEdited: false });
+  // 0.3秒の短いテロップを含む
+  const caps = [mk(0, 0.1, 1.2), mk(1, 1.25, 1.55), mk(2, 1.6, 3.0), mk(3, 3.1, 4.5)];
+  const sc = scenesPerCaption(caps, tl, 5 * SR, 0.6);
+  assert.equal(sc.length, 3);
+  assert.equal(sc[0]!.srcStart, 0);
+  assert.equal(sc[sc.length - 1]!.srcEnd, 5 * SR);
+  for (let i = 1; i < sc.length; i++) assert.equal(sc[i]!.srcStart, sc[i - 1]!.srcEnd);
+  for (const s of sc) assert.ok((s.srcEnd - s.srcStart) / SR >= 0.6);
+});

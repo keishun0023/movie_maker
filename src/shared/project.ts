@@ -13,7 +13,7 @@ import {
 } from './types.js';
 import { CUT_PRESETS, DEFAULT_CUT_PRESET, decideCuts, detectSilences, flagTokens, levelStats, protectBySpeech, removeRangesFromCuts } from './silence.js';
 import { buildTimeline, clampSpeed, identityTimeline, msToSamples, speedKeyOf, srcToOut } from './timemap.js';
-import { buildCaptions, buildScenes, carryOverScenes, DEFAULT_SEGMENT_OPTIONS, mergeCaptions, splitLongScenes, applyRhythm, usableTokens, type SegmentOptions } from './segment.js';
+import { buildCaptions, buildScenes, carryOverScenes, DEFAULT_SEGMENT_OPTIONS, mergeCaptions, splitLongScenes, applyRhythm, scenesPerCaption, usableTokens, type SegmentOptions } from './segment.js';
 import { charsPerLineFor, DEFAULT_STYLE } from './captionRender.js';
 
 /** 初期値 'auto' は、実行時に API のモデル一覧から最新の flash モデルを選ぶ(モデル名は入れ替わるため) */
@@ -42,7 +42,8 @@ export function createProject(id: string, name: string): Project {
     mix: { narrationDb: 0 },
     export: { width: 1080, height: 1920, fps: 30, crf: 20, bgColor: '#161616', alsoWav: false, alsoSrt: false },
     safeArea: { show: false, topPct: 9, bottomPct: 22, rightPct: 14 },
-    sceneLen: { minSec: 2, maxSec: 5 },
+    sceneLen: { minSec: 0.6, maxSec: 3, rhythm: 'caption' },
+    captionLen: 'short',
     aiAssign: { consent: false, assetIds: [] },
     asr: { engine: 'whisper', quality: 'accuracy', model: null, dtw: false, geminiModel: DEFAULT_GEMINI_MODEL, cloudConsent: false },
   };
@@ -80,8 +81,8 @@ export function segmentOptionsFor(p: Project): SegmentOptions {
     sceneMaxSec: p.sceneLen.maxSec,
     introSec: p.sceneLen.introSec ?? 0,
     introMaxSec: p.sceneLen.introMaxSec ?? 0,
-    // 短く区切る: 1行・約8文字で、話の区切り(「〜は」など)ごとにテロップを分ける
-    ...(p.captionLen === 'short' ? { charsPerLine: Math.min(8, charsPerLineFor(p.style)), maxLines: 1, captionMinSec: 0.4, captionMaxSec: 1.6 } : {}),
+    // 短く区切る: 1行・11文字までで、話の区切り(「〜は」「〜とか」など)ごとにテロップを分ける
+    ...(p.captionLen === 'short' ? { charsPerLine: Math.min(11, charsPerLineFor(p.style)), maxLines: 1, captionMinSec: 0.5, captionMaxSec: 2.2 } : {}),
   };
 }
 
@@ -175,7 +176,9 @@ export function autoEdit(p: Project, a: AnalysisData, opt: AutoEditOptions = { k
     ? normalizeScenes(p.scenes, dur)
     : carryOverScenes(
         p.scenes,
-        cutToLength({ ...next, captions: caps }, buildScenes(caps, tl, dur, segmentOptionsFor(next))),
+        next.sceneLen.rhythm === 'caption'
+          ? scenesPerCaption(caps, tl, dur, Math.max(0.6, next.sceneLen.minSec))
+          : cutToLength({ ...next, captions: caps }, buildScenes(caps, tl, dur, segmentOptionsFor(next))),
       );
   return { ...next, captions: markCaptionReview(caps, tl), scenes };
 }
@@ -225,5 +228,8 @@ function cutToLength(p: Project, scenes: Scene[]): Scene[] {
   const tl = timelineOf(p);
   const tokens = usableTokens(p.transcript?.tokens ?? []);
   const opt = segmentOptionsFor(p);
-  return p.sceneLen.rhythm === 'mix' ? applyRhythm(scenes, tokens, tl, p.captions, opt) : splitLongScenes(scenes, tokens, tl, opt);
+  if (p.sceneLen.rhythm === 'mix') return applyRhythm(scenes, tokens, tl, p.captions, opt);
+  // テロップごとのカット割りでも、テロップのない長い区間(3秒超)は分ける
+  if (p.sceneLen.rhythm === 'caption') return splitLongScenes(scenes, tokens, tl, { ...opt, sceneMaxSec: 3, introSec: 0 });
+  return splitLongScenes(scenes, tokens, tl, opt);
 }

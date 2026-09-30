@@ -401,13 +401,12 @@ function geminiBox(p: Project): HTMLElement {
 /** 1カットの長さ・テロップの長さ */
 function sceneLenSection(p: Project): HTMLElement {
   const presets: [string, number, number][] = [
-    ['0.5〜1秒(超テンポ)', 0.5, 1],
     ['1〜2秒(テンポ重視)', 1, 2],
     ['2〜3秒', 2, 3],
     ['2〜5秒(標準)', 2, 5],
   ];
-  const mix = p.sceneLen.rhythm === 'mix';
-  const cur = mix ? undefined : presets.find(([, a, b]) => a === p.sceneLen.minSec && b === p.sceneLen.maxSec);
+  const perCap = p.sceneLen.rhythm === 'caption';
+  const cur = perCap || p.sceneLen.rhythm === 'mix' ? undefined : presets.find(([, a, b]) => a === p.sceneLen.minSec && b === p.sceneLen.maxSec);
   const intro = (p.sceneLen.introSec ?? 0) > 0;
   const setLen = (patch: Partial<Project['sceneLen']>) => store.commit((pp) => splitScenesToCutLength({ ...pp, sceneLen: { ...pp.sceneLen, ...patch } }));
   const short = p.captionLen === 'short';
@@ -418,12 +417,12 @@ function sceneLenSection(p: Project): HTMLElement {
       h(
         'div',
         { class: 'seg-buttons' },
-        h('button', { type: 'button', class: mix ? 'on' : '', onclick: () => setLen({ minSec: 1.5, maxSec: 3, rhythm: 'mix', introSec: 3, introMaxSec: 0.7 }) }, 'メリハリ(おすすめ)'),
+        h('button', { type: 'button', class: perCap ? 'on' : '', onclick: () => setLen({ minSec: 0.6, maxSec: 3, rhythm: 'caption', introSec: 0, introMaxSec: 0 }) }, 'テロップごと(おすすめ)'),
         presets.map(([label, a, b]) => h('button', { type: 'button', class: cur?.[1] === a && cur?.[2] === b ? 'on' : '', onclick: () => setLen({ minSec: a, maxSec: b, rhythm: 'even' }) }, label)),
       ),
     ),
-    mix
-      ? h('p', { class: 'hint' }, '冒頭3秒は0.7秒以下で細かく、「！」「？」や数字のある強調の箇所は約1秒、説明の箇所は長め(〜3秒)と短め(約1.4秒)を交互に。速いカットが3つ続いたら次は長めにして、速い・遅いを織り交ぜます。')
+    perCap
+      ? h('p', { class: 'hint' }, 'テロップ1つにつき1カットで背景を切り替えます。0.6秒未満の短いカットは隣とまとめます(細切れが続くと目が疲れるため)。')
       : checkbox(intro, '冒頭3秒はさらに細かく切る(1カット0.8秒以下)', (v) => setLen(v ? { introSec: 3, introMaxSec: 0.8 } : { introSec: 0, introMaxSec: 0 })),
     field(
       'テロップの長さ',
@@ -431,9 +430,9 @@ function sceneLenSection(p: Project): HTMLElement {
         'div',
         { class: 'seg-buttons' },
         h('button', { type: 'button', class: !short ? 'on' : '', onclick: () => store.commit((pp) => ({ ...pp, captionLen: 'normal' })) }, '標準(2行まで)'),
-        h('button', { type: 'button', class: short ? 'on' : '', onclick: () => store.commit((pp) => ({ ...pp, captionLen: 'short' })) }, '短く区切る(1行・約8文字)'),
+        h('button', { type: 'button', class: short ? 'on' : '', onclick: () => store.commit((pp) => ({ ...pp, captionLen: 'short' })) }, '短く区切る(1行・11文字まで)'),
       ),
-      '「短く区切る」は「色黒女子は / 全員これ使え」のように、話の区切りごとにテロップを分けます',
+      '「短く区切る」は「色黒女子は / 全員これ使え」「白玉点滴とか / 美容医療に手出す前に」のように、話の区切りごとにテロップを分けます',
     ),
     h('p', { class: 'hint' }, 'カットの長さは、長すぎるカットをその場で語の切れ目で分けます。テロップの長さと、短いカットをまとめ直すには「テロップ・シーンを作り直す」(または自動編集)を押してください。'),
     p.transcript ? button('この設定でテロップ・シーンを作り直す(手動修正は保持)', () => rebuildCaptions(true)) : null,

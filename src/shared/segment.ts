@@ -29,7 +29,7 @@ export const DEFAULT_SEGMENT_OPTIONS: SegmentOptions = {
 
 const SENTENCE_END = /[。！？!?]$/;
 const COMMA_END = /[、，,]$/;
-const CONJ_PARTICLE_END = /(けど|けれど|けれども|から|ので|のに|たら|なら|ながら|が|て|で|ば)$/;
+const CONJ_PARTICLE_END = /(けど|けれど|けれども|から|ので|のに|たら|なら|ながら|とか|でも|って|が|て|で|ば)$/;
 /** 直前の語に付く助動詞・補助動詞など(この前では切らない) */
 const AUX_START = /^(ない|なか|なく|ます|まし|ませ|いる|いま|いた|いて|ある|あり|しま|ちゃ|くだ|られ|れる|れた|せる|せた|たい|そう|よう|らし|です|でし|だっ|だろ|じゃ|たら|たり|ても|ずに)/;
 const CASE_PARTICLE_END = /(は|を|に|へ|と|も|や)$/;
@@ -58,8 +58,11 @@ export function boundaryScore(tokens: Token[], i: number, tl: Timeline | null): 
   else if (COMMA_END.test(at)) s += 6;
   else if (CONJ_PARTICLE_END.test(at)) s += 3;
   else if (CASE_PARTICLE_END.test(at)) s += 1.5;
+  else if (/の$/.test(at)) s += 0.8;
   if (CONJ_START.test(bt)) s += 3;
   if (AUX_START.test(bt)) s -= 5;
+  // 「見える化」「効果的」などの接尾語の手前では切らない
+  if (/^(化|的|性|率|感|用|式|型|系|製|風|版|さん|様|ちゃん|くん|たち|達)/.test(bt)) s -= 5;
   // 発話の間(元音声での隙間)
   const gap = (b.start - a.end) / SR;
   if (gap >= 0.3) s += 6;
@@ -72,6 +75,8 @@ export function boundaryScore(tokens: Token[], i: number, tl: Timeline | null): 
   const cb = charClass(firstB);
   if (ca === 'kata' && cb === 'kata') s -= 5;
   else if (ca === 'kanji' && cb === 'kanji') s -= 2.5;
+  // 漢字とカタカナが続く複合語(白玉ビタミンなど)の途中
+  else if ((ca === 'kanji' && cb === 'kata') || (ca === 'kata' && cb === 'kanji')) s -= 2;
   else if (ca === 'kanji' && cb === 'hira') s -= 2;
   else if ((ca === 'latin' || ca === 'digit') && (cb === 'latin' || cb === 'digit')) s -= 5;
   else if (ca === 'hira' && cb === 'hira' && s < 1) s -= 2.5;
@@ -363,6 +368,43 @@ export function applyRhythm(scenes: Scene[], tokens: Token[], tl: Timeline | nul
     }
   }
   return out;
+}
+
+/**
+ * テロップ1つ = 1カットにする。短すぎるカット(minSec 未満)は隣のカットとまとめる
+ * (0.3〜0.5秒の切り替えが続くと目が疲れるため)。
+ */
+export function scenesPerCaption(captions: Caption[], tl: Timeline | null, srcSamples: number, minSec = 0.6): Scene[] {
+  const caps = [...captions].sort((a, b) => a.srcStart - b.srcStart);
+  if (caps.length === 0) return [{ id: newId('scn'), srcStart: 0, srcEnd: srcSamples, bg: null, inset: null }];
+  const bounds = [0];
+  for (let i = 1; i < caps.length; i++) bounds.push(sceneBoundary(caps[i - 1]!, caps[i]!));
+  bounds.push(srcSamples);
+  let scenes: Scene[] = [];
+  for (let i = 0; i < bounds.length - 1; i++) {
+    if (bounds[i + 1]! > bounds[i]!) scenes.push({ id: newId('scn'), srcStart: bounds[i]!, srcEnd: bounds[i + 1]!, bg: null, inset: null });
+  }
+  const durOf = (sc: Scene) => (tokenOut(tl, sc.srcEnd) - tokenOut(tl, sc.srcStart)) / SR;
+  // 短いカットを、短い方の隣とまとめる(なくなるまで繰り返す)
+  for (;;) {
+    let idx = -1;
+    let shortest = minSec;
+    scenes.forEach((sc, i) => {
+      const d = durOf(sc);
+      if (d < shortest && scenes.length > 1) {
+        shortest = d;
+        idx = i;
+      }
+    });
+    if (idx < 0) break;
+    const prev = scenes[idx - 1];
+    const next = scenes[idx + 1];
+    const into = !prev ? idx + 1 : !next ? idx - 1 : durOf(prev) <= durOf(next) ? idx - 1 : idx + 1;
+    const a = Math.min(idx, into);
+    const merged: Scene = { ...scenes[a]!, srcEnd: scenes[a + 1]!.srcEnd };
+    scenes = [...scenes.slice(0, a), merged, ...scenes.slice(a + 2)];
+  }
+  return scenes;
 }
 
 /** 2つのテロップの間のシーン境界(元音声の位置)。無音の中央に置く */
