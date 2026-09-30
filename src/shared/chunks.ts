@@ -95,7 +95,7 @@ export function splitJaText(text: string): string[] {
 }
 
 /** 読み上げにかかる長さの目安(数字は読みが長いので重め) */
-function speakWeight(s: string): number {
+export function speakWeight(s: string): number {
   let w = 0;
   for (const ch of s) {
     if (/[、。！？!?」』）)「『（(\s]/.test(ch)) w += 0.2;

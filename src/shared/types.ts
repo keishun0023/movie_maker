@@ -77,7 +77,8 @@ export interface Token {
   seg: number;
   /** 時刻の出どころ。segment は区間単位しか取れなかったことを示す */
   /** chunk は無音で区切った音声片の中を文字量で配分した推定時刻(クラウド認識) */
-  timing: 'token' | 'dtw' | 'segment' | 'chunk';
+  /** aligned はクラウド認識の文字を、ローカル認識(whisper)の時刻に合わせたもの */
+  timing: 'token' | 'dtw' | 'segment' | 'chunk' | 'aligned';
   flags?: TokenFlag[];
 }
 

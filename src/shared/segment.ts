@@ -16,6 +16,8 @@ export interface SegmentOptions {
   /** 冒頭のこの秒数だけ、カットの最大長を introMaxSec にする(0 なら無効) */
   introSec?: number;
   introMaxSec?: number;
+  /** これより短いテロップを強めに避ける(短く区切るモード用。未指定なら 4 文字の弱い目安) */
+  minChars?: number;
 }
 
 export const DEFAULT_SEGMENT_OPTIONS: SegmentOptions = {
@@ -31,7 +33,9 @@ const SENTENCE_END = /[。！？!?]$/;
 const COMMA_END = /[、，,]$/;
 const CONJ_PARTICLE_END = /(けど|けれど|けれども|から|ので|のに|たら|なら|ながら|とか|でも|って|が|て|で|ば)$/;
 /** 直前の語に付く助動詞・補助動詞など(この前では切らない) */
-const AUX_START = /^(ない|なか|なく|ます|まし|ませ|いる|いま|いた|いて|ある|あり|しま|ちゃ|くだ|られ|れる|れた|せる|せた|たい|そう|よう|らし|です|でし|だっ|だろ|じゃ|たら|たり|ても|ずに)/;
+const AUX_START = /^(ない|なか|なく|ます|まし|ませ|いる|いま|いた|いて|ある|あり|しま|ちゃう|ちゃっ|ちゃい|ちゃえ|ちゃお|じゃう|じゃっ|くだ|られ|れる|れた|せる|せた|たい|そう|よう|らし|です|でし|だっ|だろ|じゃ|たら|たり|ても|ずに|なる|なっ|なれ|なら(?!ば))/;
+/** 「〜前に」「〜ために」など節の終わり(語が分かれていても前の語とつなげて判定する) */
+const CLAUSE_END = /(前に|後に|ために|ように|うちに|ときに|時に)$/;
 const CASE_PARTICLE_END = /(は|を|に|へ|と|も|や)$/;
 const CONJ_START = /^(でも|だから|しかし|そして|なので|それで|ただ|実は|つまり|まず|次に|さらに|ちなみに|結局|要するに|ところが|それから|あと|なぜなら|例えば)/;
 
@@ -56,13 +60,18 @@ export function boundaryScore(tokens: Token[], i: number, tl: Timeline | null): 
   let s = 0;
   if (SENTENCE_END.test(at)) s += 10;
   else if (COMMA_END.test(at)) s += 6;
-  else if (CONJ_PARTICLE_END.test(at)) s += 3;
+  else if (CONJ_PARTICLE_END.test(at) || CLAUSE_END.test((tokens[i - 1]?.text.trim() ?? '') + at)) s += 3;
   else if (CASE_PARTICLE_END.test(at)) s += 1.5;
   else if (/の$/.test(at)) s += 0.8;
-  if (CONJ_START.test(bt)) s += 3;
+  const afterPunct = SENTENCE_END.test(at) || COMMA_END.test(at);
+  // 語と助詞のあいだ(「1位 / の」「クリニック / でも」)では切らない
+  if (!afterPunct && /^(の|は|が|を|に|へ|で|と|も|や|でも|から|まで|より|って|とか|など)[、。！？!?]?$/.test(bt)) s -= 8;
+  else if (CONJ_START.test(bt)) s += 3;
+  // 「気になる / 人は」のように、名詞を修飾している途中では切りにくくする
+  if (!afterPunct && /[るたいな]$/.test(at) && /^(人|方|もの|こと|時|とき|ため|感じ|くらい|ぐらい)/.test(bt)) s -= 3;
   if (AUX_START.test(bt)) s -= 5;
   // 「見える化」「効果的」などの接尾語の手前では切らない
-  if (/^(化|的|性|率|感|用|式|型|系|製|風|版|さん|様|ちゃん|くん|たち|達)/.test(bt)) s -= 5;
+  if (/^(化|的|性|率|感|用|式|型|系|製|風|版|様|達)/.test(bt) || /^(さん|ちゃん|くん|たち)[はがをにのもや、。！？!?]?$/.test(bt)) s -= 5;
   // 発話の間(元音声での隙間)
   const gap = (b.start - a.end) / SR;
   if (gap >= 0.3) s += 6;
@@ -74,11 +83,13 @@ export function boundaryScore(tokens: Token[], i: number, tl: Timeline | null): 
   const ca = charClass(lastA);
   const cb = charClass(firstB);
   if (ca === 'kata' && cb === 'kata') s -= 5;
-  else if (ca === 'kanji' && cb === 'kanji') s -= 2.5;
+  else if (ca === 'kanji' && cb === 'kanji') s -= 4;
   // 漢字とカタカナが続く複合語(白玉ビタミンなど)の途中
   else if ((ca === 'kanji' && cb === 'kata') || (ca === 'kata' && cb === 'kanji')) s -= 2;
   else if (ca === 'kanji' && cb === 'hira') s -= 2;
   else if ((ca === 'latin' || ca === 'digit') && (cb === 'latin' || cb === 'digit')) s -= 5;
+  // 「Amazonランキング」「TikTokショップ」のような英字とカタカナの複合語の途中
+  else if ((ca === 'latin' && cb === 'kata') || (ca === 'kata' && cb === 'latin')) s -= 2.5;
   else if (ca === 'hira' && cb === 'hira' && s < 1) s -= 2.5;
   return s;
 }
@@ -108,7 +119,9 @@ export function splitIntoCaptionRanges(tokens: Token[], tl: Timeline | null, opt
       let c = 2.0; // テロップ1枚ごとの基本コスト(細切れ防止)
       if (dur < opt.captionMinSec) c += (opt.captionMinSec - dur) * 8;
       if (dur > opt.captionMaxSec) c += (dur - opt.captionMaxSec) * 5;
-      if (chars < 4) c += (4 - chars) * 0.8;
+      if (opt.minChars) {
+        if (chars < opt.minChars) c += (opt.minChars - chars) * 1.3;
+      } else if (chars < 4) c += (4 - chars) * 0.8;
       if (chars > opt.charsPerLine) c += (chars - opt.charsPerLine) * 0.08; // 2行目は少しだけ避ける
       if (chars > maxChars) c += 50;
       const bs = j < n ? scores[j - 1]! : 0;

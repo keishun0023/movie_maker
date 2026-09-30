@@ -115,3 +115,22 @@ test('台本から認識ヒントと表記候補を作る(自動挿入はしな�
   assert.ok(s && s.text.includes('アハモに'));
   assert.equal(suggestFromScript('全く関係のない話題です', script), null);
 });
+
+test('短く区切る: 「誰でも / 憧れの」のような細切れや、語と助詞の間では切らない', async () => {
+  const { tokensFromChunks } = await import('../shared/chunks.js');
+  const { buildCaptions, DEFAULT_SEGMENT_OPTIONS } = await import('../shared/segment.js');
+  const texts = ['吸収率7.9倍のナノリポソームVC配合で', '誰でも憧れの白玉肌目指せちゃう！', 'Amazonランキングも1位の超人気商品なんだけど', 'だから気になる人はちゃんと公式から買ってほしい！', '韓国でも話題の美容成分10種と'];
+  let t = 0;
+  const chunks = texts.map((x) => {
+    const d = x.length / 8.5;
+    const c = { start: Math.round(t * 48000), end: Math.round((t + d) * 48000) };
+    t += d + 0.25;
+    return c;
+  });
+  const caps = buildCaptions(tokensFromChunks(chunks, texts), null, { ...DEFAULT_SEGMENT_OPTIONS, charsPerLine: 11, maxLines: 1, captionMinSec: 0.5, captionMaxSec: 2.2, minChars: 5 });
+  const out = caps.map((c) => c.text.replace(/\n/g, ''));
+  assert.ok(out.includes('誰でも憧れの'), out.join(' / '));
+  assert.ok(out.includes('だから気になる人は'), out.join(' / '));
+  assert.ok(out.includes('韓国でも'), out.join(' / '));
+  assert.ok(!out.some((x) => /^(の|でも|は)/.test(x)), out.join(' / '));
+});

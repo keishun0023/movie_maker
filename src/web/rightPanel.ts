@@ -396,6 +396,27 @@ function geminiBox(p: Project): HTMLElement {
       '。背景の画像・動画・BGM は送信しません。',
       checkbox(p.asr.cloudConsent, 'このプロジェクトの音声を Google Gemini API に送信することに同意する', (v) => store.commit((pp) => ({ ...pp, asr: { ...pp.asr, cloudConsent: v } }))),
     ),
+    alignBox(),
+  );
+}
+
+/** Gemini の文字をローカル whisper の時刻に合わせる(テロップが声より遅れる・早まるのを防ぐ) */
+function alignBox(): HTMLElement | null {
+  const sys = store.state.system;
+  if (!sys) return null;
+  if (!sys.asrAvailable) return h('p', { class: 'hint' }, 'whisper.cpp を入れると、テロップの時刻を声に正確に合わせられます(README のセットアップ手順)。');
+  const selected = sys.models.find((m) => m.id === selectedModelId());
+  const order = ['large-v3-turbo-q5_0', 'large-v3-turbo', 'medium-q5_0', 'small-q5_1'];
+  const use = selected?.installed ? selected : order.map((id) => sys.models.find((m) => m.id === id && m.installed)).find((m) => !!m);
+  if (use) return h('p', { class: 'hint' }, `テロップの時刻合わせ: ローカルの whisper (${use.label}) で声のタイミングを調べ、Gemini の文字に合わせます(この処理の音声は外部に送信しません)。`);
+  const dl = selected ?? sys.models.find((m) => m.id === sys.recommend.speed) ?? sys.models[0];
+  return h(
+    'div',
+    { class: 'note' },
+    h('b', null, 'テロップの時刻合わせ: '),
+    'Gemini は語ごとの時刻を返さないため、早口の所でテロップが声より遅れる(早まる)ことがあります。ローカルの whisper モデルを入れておくと、声のタイミングを調べて正確に合わせます(音声は外部に送信しません)。',
+    dl ? h('div', null, button(`whisper モデルをダウンロード(${dl.label}・約${dl.sizeMB}MB)`, () => void downloadModel(dl.id), { class: 'primary' })) : null,
+    jobsBox(['model-download']),
   );
 }
 

@@ -2,8 +2,9 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import type { Asset, JobInfo, Project, StylePreset, Timeline, Transcript } from '../shared/types.js';
+import type { Asset, JobInfo, Project, StylePreset, Timeline, Token, Transcript } from '../shared/types.js';
 import { speechChunks, tokensFromChunks } from '../shared/chunks.js';
+import { alignChunkTokens } from '../shared/align.js';
 import { geminiTranscribe, listGeminiModels, resolveGeminiModel } from './asr/gemini.js';
 import { anthropicKey, anthropicKeySource, geminiKey, geminiKeySource, setAnthropicKey, setGeminiKey } from './secrets.js';
 import { aiAssign } from './ai/assign.js';
@@ -31,7 +32,7 @@ import {
   thumbPath,
   writeWav,
 } from './media.js';
-import { downloadModel, isInstalled, listModels, modelDef, modelPath, recommend } from './models.js';
+import { downloadModel, isInstalled, listModels, MODELS, modelDef, modelPath, recommend, type ModelDef } from './models.js';
 import { requireTool, runOk } from './proc.js';
 import {
   assertId,
@@ -341,16 +342,20 @@ async function transcribeWithGemini(id: string, body: TranscribeBody): Promise<J
     projectId: id,
     queue: 'analysis',
     runner: async (ctx) => {
+      // ローカルの whisper があれば、Gemini の文字を whisper の時刻に合わせる(テロップのずれ防止)
+      const alignDef = whisperForAlignment(body.modelId);
+      const gp = (p: number, m?: string) => ctx.progress(alignDef ? p * 0.7 : p, m ?? '');
       if (fs.existsSync(cacheFile)) {
-        ctx.progress(1, '前回の認識結果を再利用しました');
-        return { transcript: JSON.parse(await fsp.readFile(cacheFile, 'utf8')) as Transcript, cached: true };
+        gp(1, '前回の認識結果を再利用しました');
+        const cached = JSON.parse(await fsp.readFile(cacheFile, 'utf8')) as Transcript;
+        return { transcript: await alignWithWhisper(id, key, cached, alignDef, !!body.dtw, ctx), cached: true };
       }
-      ctx.progress(0.02, '音声を無音で区切っています');
+      gp(0.02, '音声を無音で区切っています');
       const analysis = await loadAnalysis(id, key);
       const chunks = speechChunks(analysis, sens);
       if (chunks.length === 0) throw new Error('発話のある区間が見つかりませんでした。');
       const pcm = await readWav(asrWavPath(id, key));
-      const r = await geminiTranscribe({ pcm16k: pcm.data, chunks, model, apiKey, hints, signal: ctx.signal, progress: ctx.progress });
+      const r = await geminiTranscribe({ pcm16k: pcm.data, chunks, model, apiKey, hints, signal: ctx.signal, progress: gp });
       const tokens = tokensFromChunks(chunks, r.texts);
       const notes = [
         `Gemini (${model}) で ${chunks.length} 個の音声片を書き起こしました。`,
@@ -360,9 +365,73 @@ async function transcribeWithGemini(id: string, body: TranscribeBody): Promise<J
       if (hints.length) notes.push(`台本から認識ヒントを使用: ${hints.join('、')}`);
       const transcript: Transcript = { engine: 'gemini', model, createdAt: new Date().toISOString(), basis: 'source', tokens, notes };
       await atomicWrite(cacheFile, JSON.stringify(transcript));
-      return { transcript, cached: false };
+      return { transcript: await alignWithWhisper(id, key, transcript, alignDef, !!body.dtw, ctx), cached: false };
     },
   });
+}
+
+/** 時刻合わせに使う whisper モデル(導入済みのもの。なければ null) */
+function whisperForAlignment(preferId: string | undefined): ModelDef | null {
+  if (!asr.available()) return null;
+  const prefer = preferId ? modelDef(preferId) : null;
+  if (prefer && isInstalled(prefer)) return prefer;
+  const order = ['large-v3-turbo-q5_0', 'large-v3-turbo', 'medium-q5_0', 'small-q5_1'];
+  return order.map((m) => MODELS.find((d) => d.id === m)).find((d): d is ModelDef => !!d && isInstalled(d)) ?? null;
+}
+
+const ESTIMATE_NOTE = '時刻は無音で区切った音声片の境目(音量解析)を使い、音声片の中は文字量で推定しています。';
+
+/**
+ * Gemini の結果(音声片の中は文字量で推定した時刻)を、ローカルの whisper で求めた時刻に合わせる。
+ * whisper の結果はキャッシュし、失敗しても推定時刻のまま続ける。
+ */
+async function alignWithWhisper(
+  id: string,
+  key: string,
+  tr: Transcript,
+  def: ModelDef | null,
+  dtw: boolean,
+  ctx: { signal: AbortSignal; progress: (p: number, m?: string) => void },
+): Promise<Transcript> {
+  const base = tr.notes.filter((n) => n !== ESTIMATE_NOTE && !n.startsWith('whisper'));
+  if (!def) {
+    return { ...tr, notes: [...base, ESTIMATE_NOTE, 'whisper(ローカル)のモデルを1つ入れておくと、テロップの時刻を声に正確に合わせられます(音声は外部に送られません)。'] };
+  }
+  try {
+    const cacheKey = crypto
+      .createHash('sha1')
+      .update(JSON.stringify([key, def.id, dtw, '', 'source', '']))
+      .digest('hex')
+      .slice(0, 20);
+    const cacheFile = sub(id, 'cache', `asr-${cacheKey}.json`);
+    let timed: Token[];
+    if (fs.existsSync(cacheFile)) {
+      timed = (JSON.parse(await fsp.readFile(cacheFile, 'utf8')) as Transcript).tokens;
+    } else {
+      ctx.progress(0.7, `テロップの時刻を合わせています(whisper ${def.label})`);
+      const r = await asr.transcribe({
+        wavPath: asrWavPath(id, key),
+        language: 'ja',
+        modelPath: modelPath(def),
+        ...(dtw ? { dtwPreset: def.dtw } : {}),
+        workDir: sub(id, 'work'),
+        signal: ctx.signal,
+        progress: (p, m) => ctx.progress(0.7 + p * 0.29, `時刻合わせ: ${m ?? ''}`),
+      });
+      const w: Transcript = { engine: asr.name, model: def.id, createdAt: new Date().toISOString(), basis: 'source', tokens: r.tokens, notes: r.notes };
+      await atomicWrite(cacheFile, JSON.stringify(w));
+      timed = r.tokens;
+    }
+    const { tokens, stats } = alignChunkTokens(tr.tokens, timed);
+    const note =
+      stats.aligned > 0
+        ? `whisper (${def.label}) の時刻に合わせました(${stats.groups} 個中 ${stats.aligned} 個の音声片、一致した文字 ${Math.round(stats.matchRate * 100)}%)。`
+        : `whisper (${def.label}) の結果と文字がほとんど一致しなかったため、推定時刻のままです。`;
+    return { ...tr, tokens, notes: stats.aligned < stats.groups ? [...base, ESTIMATE_NOTE, note] : [...base, note] };
+  } catch (e) {
+    if (ctx.signal.aborted) throw e;
+    return { ...tr, notes: [...base, ESTIMATE_NOTE, `whisper での時刻合わせに失敗したため、推定時刻のままです: ${e instanceof Error ? e.message : String(e)}`] };
+  }
 }
 
 router.post('/api/projects/:id/transcribe', async (req, res) => {

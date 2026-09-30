@@ -84,7 +84,7 @@ export function segmentOptionsFor(p: Project): SegmentOptions {
     introSec: p.sceneLen.introSec ?? 0,
     introMaxSec: p.sceneLen.introMaxSec ?? 0,
     // 短く区切る: 1行・11文字までで、話の区切り(「〜は」「〜とか」など)ごとにテロップを分ける
-    ...(p.captionLen === 'short' ? { charsPerLine: Math.min(11, charsPerLineFor(p.style)), maxLines: 1, captionMinSec: 0.5, captionMaxSec: 2.2 } : {}),
+    ...(p.captionLen === 'short' ? { charsPerLine: Math.min(11, charsPerLineFor(p.style)), maxLines: 1, captionMinSec: 0.5, captionMaxSec: 2.2, minChars: 5 } : {}),
   };
 }
 
