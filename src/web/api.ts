@@ -83,6 +83,8 @@ export const api = {
   editedAudio: (projectId: string, sourceKey: string, timeline: Timeline) => call<{ url: string }>('POST', `/api/projects/${projectId}/edited-audio`, { sourceKey, timeline }),
   startExport: (projectId: string, project: Project, captions: { id: string; outStart: number; outEnd: number; text: string; png: string }[]) =>
     call<JobInfo>('POST', `/api/projects/${projectId}/exports`, { project, captions }),
+  capcutInfo: (dir?: string) => call<{ dir: string; defaultDir: string; exists: boolean; projects: number; version: string | null }>('GET', '/api/capcut' + (dir ? `?dir=${encodeURIComponent(dir)}` : '')),
+  startCapcut: (projectId: string, project: Project) => call<JobInfo>('POST', `/api/projects/${projectId}/capcut`, { project }),
   exports: (projectId: string) => call<{ name: string; size: number; mtime: string }[]>('GET', `/api/projects/${projectId}/exports`),
   reveal: (projectId: string) => call<{ path: string }>('POST', `/api/projects/${projectId}/reveal`, {}),
   jobs: (projectId?: string) => call<JobInfo[]>('GET', '/api/jobs' + (projectId ? `?projectId=${projectId}` : '')),

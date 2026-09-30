@@ -484,6 +484,28 @@ export async function startExport(): Promise<void> {
   }
 }
 
+/** CapCut のプロジェクト(下書き)として書き出す */
+export async function startCapcutExport(): Promise<void> {
+  await store.save();
+  const chk = await checkExport();
+  if (chk.errors.length) {
+    toast(chk.errors.join('\n'), 'error');
+    return;
+  }
+  const p = JSON.parse(JSON.stringify(store.p)) as Project;
+  try {
+    const job = await api.startCapcut(p.id, p);
+    watchJob(job, (j) => {
+      if (j.status === 'done') {
+        const r = j.result as { draftName: string; appVersion: string; notes: string[] };
+        toast(`CapCut に「${r.draftName}」を作りました。CapCut を起動するとプロジェクト一覧に表示されます。\n${r.notes.join('\n')}`, 'ok', 12000);
+      } else if (j.status === 'failed') toast('CapCut への書き出しに失敗しました: ' + j.error, 'error', 10000);
+    });
+  } catch (e) {
+    toast((e as Error).message, 'error');
+  }
+}
+
 export async function downloadModel(id: string) {
   try {
     const job = await api.downloadModel(id);

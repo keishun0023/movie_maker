@@ -14,6 +14,7 @@ import { buildPreview, importUpload, removeAssetFiles } from './assets.js';
 import { WhisperCppAdapter } from './asr/whisperCpp.js';
 import { PRESETS_FILE } from './config.js';
 import { cleanupDir, exportBaseName, runExport, type CaptionImage } from './export.js';
+import { defaultDraftsDir, exportCapcut, findSeed } from './capcut.js';
 import { fontBytes, fontEntry, listFonts, missingChars, registerProjectFont, scanFonts } from './fonts.js';
 import { readBody, readJson, Router, sendFile, sendJson } from './http.js';
 import { cancelJob, enqueue, getJob, listJobs, retryJob } from './jobs.js';
@@ -555,6 +556,32 @@ router.post('/api/projects/:id/exports', async (req, res) => {
     queue: 'export',
     runner: (ctx) => runExport({ project, captions: caps, workDir, baseName }, ctx),
     cleanup: cleanupDir(workDir),
+  });
+  sendJson(res, 200, job);
+});
+
+/** CapCut の下書きフォルダの状態(見つかるか・見本にするプロジェクトの版) */
+router.get('/api/capcut', (req, res) => {
+  const dir = (req.query.get('dir') ?? '').trim() || defaultDraftsDir();
+  const exists = fs.existsSync(dir);
+  const f = exists ? findSeed(dir) : { seed: null, projects: 0, unreadable: 0 };
+  sendJson(res, 200, { dir, defaultDir: defaultDraftsDir(), exists, projects: f.projects, version: f.seed?.version ?? null });
+});
+
+router.post('/api/projects/:id/capcut', async (req, res) => {
+  const id = assertId(req.params.id!);
+  const body = await readJson<{ project: Project }>(req, 20 * 1024 * 1024);
+  const project = body.project;
+  if (!project || project.id !== id) throw new HttpError(400, 'プロジェクトが一致しません');
+  if (!project.narration) throw new HttpError(400, 'ナレーション音声を設定してください');
+  const dir = (project.export.capcutDir ?? '').trim() || defaultDraftsDir();
+  if (!path.isAbsolute(dir)) throw new HttpError(400, 'CapCut の下書きフォルダは絶対パスで指定してください');
+  const job = enqueue({
+    type: 'capcut',
+    label: 'CapCut のプロジェクトに書き出し',
+    projectId: id,
+    queue: 'export',
+    runner: (ctx) => exportCapcut(project, dir, ctx),
   });
   sendJson(res, 200, job);
 });

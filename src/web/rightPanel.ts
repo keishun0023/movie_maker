@@ -28,6 +28,7 @@ import {
   setNarration,
   splitCaption,
   splitSceneAt,
+  startCapcutExport,
   startExport,
   updateCaption,
   updateScene,
@@ -961,10 +962,57 @@ function exportView(_player: Player): HTMLElement {
     button('動画を書き出す', () => void startExport().then(refreshExports), { class: 'primary big' }),
     jobsBox(['export']),
     doneJobs.length ? framesCompare(doneJobs[0]!.result as { frames: { file: string; timeSec: number }[] } | undefined, p.id) : null,
+    capcutSection(p),
     section('書き出したファイル', exportsBox, button('Finderで書き出しフォルダを開く', async () => {
       const r = await api.reveal(p.id);
       toast(`保存先: ${r.path}`);
     })),
+  );
+}
+
+let capcutState: { dir: string; defaultDir: string; exists: boolean; projects: number; version: string | null } | null = null;
+let capcutLoading: string | null = null;
+
+/** CapCut のプロジェクトとして書き出す */
+function capcutSection(p: Project): HTMLElement {
+  const dir = (p.export.capcutDir ?? '').trim();
+  if (capcutLoading !== dir) {
+    capcutLoading = dir;
+    capcutState = null;
+    void api.capcutInfo(dir || undefined).then((r) => {
+      capcutState = r;
+      store.emit('right');
+    }).catch(() => undefined);
+  }
+  const st = capcutState;
+  const status = !st
+    ? h('p', { class: 'hint' }, 'CapCut の下書きフォルダを確認しています…')
+    : !st.exists
+      ? h('p', { class: 'err' }, `CapCut の下書きフォルダが見つかりません(${st.dir})。CapCut を一度起動するか、CapCut の「設定 → 下書きの場所」を下に入力してください。`)
+      : !st.version
+        ? h('p', { class: 'warn' }, 'CapCut のプロジェクトがまだありません。CapCut で「新しいプロジェクト」を1つ作って閉じてから書き出してください(最新の形式に合わせる見本にします)。')
+        : h('p', { class: 'hint' }, `CapCut ${st.version} の形式で書き出します(下書きフォルダ: ${st.dir})`);
+  return section(
+    'CapCut のプロジェクトとして書き出す',
+    h('p', { class: 'hint' }, 'カット済みのナレーション・背景素材(動き付き)・テロップ(文字として編集可)・BGM を、CapCut の編集途中のプロジェクトとして作ります。CapCut を終了した状態で押してください。'),
+    status,
+    field(
+      'CapCut の下書きフォルダ',
+      h('input', {
+        type: 'text',
+        value: dir,
+        placeholder: st?.defaultDir ?? '(既定の場所)',
+        onchange: (e: Event) => {
+          const v = (e.target as HTMLInputElement).value.trim();
+          // 入力欄からフォーカスが外れる処理の途中で画面を作り直さないよう、少し後で反映する
+          setTimeout(() => store.commit((pp) => ({ ...pp, export: { ...pp.export, capcutDir: v } })), 0);
+        },
+      }),
+      '空欄なら既定の場所。CapCut の「設定 → 下書きの場所」と同じ場所を指定します',
+    ),
+    button('CapCut に書き出す', () => void startCapcutExport(), { class: 'primary', disabled: !st?.exists || !st.version }),
+    jobsBox(['capcut']),
+    h('p', { class: 'hint' }, 'iPhone で続きを編集するには: Mac の CapCut でこのプロジェクトを開き、クラウド(スペース)にアップロードすると、同じアカウントの iPhone の CapCut から開けます。'),
   );
 }
 

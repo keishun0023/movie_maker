@@ -273,6 +273,8 @@ export interface ExportSettings {
   bgColor: string;
   alsoWav: boolean;
   alsoSrt: boolean;
+  /** CapCut の下書きフォルダ(空なら既定の場所) */
+  capcutDir?: string;
 }
 
 export interface SafeAreaGuide {
