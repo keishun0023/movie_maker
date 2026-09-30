@@ -1,7 +1,7 @@
 // 右パネル: 手順ごとの設定(取り込み / 自動編集 / 確認して修正 / 書き出し)。
 import { SR, type Asset, type Caption, type CaptionStyle, type CutParams, type CutPresetId, type Project, type Scene } from '../shared/types.js';
 import { CUT_PRESETS } from '../shared/silence.js';
-import { presetParams, timelineOf } from '../shared/project.js';
+import { presetParams, splitScenesToCutLength, timelineOf } from '../shared/project.js';
 import { captionOutputTimings, sceneOutputRanges } from '../shared/segment.js';
 import { suggestFromScript } from '../shared/script.js';
 import { DEFAULT_STYLE, effectiveStyle } from '../shared/captionRender.js';
@@ -383,7 +383,7 @@ function sceneLenSection(p: Project): HTMLElement {
       'div',
       { class: 'seg-buttons' },
       presets.map(([label, a, b]) =>
-        h('button', { type: 'button', class: cur?.[1] === a && cur?.[2] === b ? 'on' : '', onclick: () => store.commit((pp) => ({ ...pp, sceneLen: { minSec: a, maxSec: b } })) }, label),
+        h('button', { type: 'button', class: cur?.[1] === a && cur?.[2] === b ? 'on' : '', onclick: () => store.commit((pp) => splitScenesToCutLength({ ...pp, sceneLen: { minSec: a, maxSec: b } })) }, label),
       ),
     ),
     h('p', { class: 'hint' }, '背景を切り替える間隔の目安です。自動編集(または下の「テロップ・シーンを作り直す」)のときに反映されます。長い文でも、この長さを超えるカットは語の切れ目で分けます。'),
@@ -433,7 +433,18 @@ function aiAssignSection(p: Project): HTMLElement {
       `選んだ素材のフレーム画像(動画は数枚ずつ、長辺384px)、各カットのテロップの文章${p.script.trim() ? '、台本' : ''}。音声や元のファイルそのものは送りません。`,
       checkbox(p.aiAssign.consent, 'これらを Claude API(Anthropic)に送信することに同意する', (v) => store.commit((pp) => ({ ...pp, aiAssign: { ...pp.aiAssign, consent: v } }))),
     ),
-    button(`Claude で ${p.scenes.length} カットに素材を割り当てる`, () => void runAiAssign(), { class: 'primary big', disabled: !ready }),
+    (() => {
+      const n = splitScenesToCutLength(p).scenes.length;
+      return h(
+        'div',
+        null,
+        p.captions.length === 0
+          ? h('p', { class: 'warn' }, '⚠ まだ自動編集(文字起こし)をしていないため、テロップがありません。このままだと話の内容で素材を選べないので、先に上の「自動編集を実行」を押してください。')
+          : null,
+        n !== p.scenes.length ? h('p', { class: 'note' }, `今のカットは ${p.scenes.length} 個です。「1カットの長さ」に合わせて ${n} 個に分けてから割り当てます。`) : null,
+        button(`Claude で ${n} カットに素材を割り当てる`, () => void runAiAssign(), { class: 'primary big', disabled: !ready }),
+      );
+    })(),
     jobsBox(['ai-assign']),
   );
 }

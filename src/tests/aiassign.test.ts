@@ -109,3 +109,17 @@ test('Claude API へ素材のフレームとカットの文章を送り、提案
     fs.rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+test('自動編集をしていない(カット1つ・テロップなし)場合も、1カットの長さに合わせて均等に分ける', async () => {
+  const { createProject, splitScenesToCutLength } = await import('../shared/project.js');
+  const p = createProject('psplit', 't');
+  p.narration = { assetId: 'n', audioIndex: 0, durationSamples: 20 * SR, sourceKey: 'k', preparedAt: '', warnings: [] };
+  p.timeline = buildTimeline(20 * SR, []);
+  p.scenes = [{ id: 'only', srcStart: 0, srcEnd: 20 * SR, bg: null, inset: null }];
+  p.sceneLen = { minSec: 1, maxSec: 2 };
+  const q = splitScenesToCutLength(p);
+  assert.equal(q.scenes.length, 10);
+  assert.equal(q.scenes[0]!.srcStart, 0);
+  assert.equal(q.scenes[9]!.srcEnd, 20 * SR);
+  for (const s of q.scenes) assert.ok(Math.abs((s.srcEnd - s.srcStart) / SR - 2) < 0.01);
+});

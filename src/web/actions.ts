@@ -1,6 +1,6 @@
 // 画面から呼ぶ操作(取り込み・自動編集・シーン/テロップ編集・書き出し)。
 import { SR, type Asset, type BgPlacement, type Caption, type JobInfo, type Project, type Scene, type Transcript } from '../shared/types.js';
-import { autoEdit, ensureTimelineSpeeds, markCaptionReview, normalizeScenes, recomputeCut, timelineOf } from '../shared/project.js';
+import { autoEdit, ensureTimelineSpeeds, markCaptionReview, normalizeScenes, recomputeCut, splitScenesToCutLength, timelineOf } from '../shared/project.js';
 import { captionOutputTimings, newId, sceneOutputRanges } from '../shared/segment.js';
 import { drawCaption, effectiveStyle } from '../shared/captionRender.js';
 import { displayFromRaw } from '../shared/jatext.js';
@@ -499,6 +499,10 @@ export async function downloadModel(id: string) {
 
 /** Claude に素材の割り当てを提案してもらい、シーンに反映する(元に戻す で取り消せる) */
 export async function runAiAssign() {
+  // カットが「1カットの長さ」より長ければ先に分ける(1カットのままだと素材が1つしか選ばれない)
+  const before = store.p.scenes.length;
+  store.commit((p) => splitScenesToCutLength(p));
+  if (store.p.scenes.length !== before) toast(`カットを ${before} 個から ${store.p.scenes.length} 個に分けてから割り当てます`);
   await store.save();
   let job: JobInfo;
   try {

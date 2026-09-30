@@ -201,3 +201,15 @@ export function normalizeScenes(scenes: Scene[], srcSamples: number): Scene[] {
 }
 
 export const secondsOf = (samples: number) => samples / SR;
+
+/**
+ * 「1カットの長さ」より長いカットを分ける(語の切れ目で。文字起こしがなければ均等に)。
+ * 自動編集をしていない(カットが1つだけ)場合でも、素材の割り当て前にカット割りを作るために使う。
+ */
+export function splitScenesToCutLength(p: Project): Project {
+  if (!p.narration || p.scenes.length === 0) return p;
+  const tl = timelineOf(p);
+  const tokens = usableTokens(p.transcript?.tokens ?? []);
+  const scenes = splitLongScenes(p.scenes, tokens, tl, segmentOptionsFor(p));
+  return scenes.length === p.scenes.length ? p : { ...p, scenes };
+}
