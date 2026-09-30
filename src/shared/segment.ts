@@ -2,7 +2,7 @@
 // 句読点・接続表現・発話の間・表示文字量を組み合わせた動的計画法で区切る。
 import { SR, type Caption, type Scene, type Timeline, type Token } from './types.js';
 import { charClass, displayFromRaw, estimateWidth } from './jatext.js';
-import { msToSamples, srcToOut } from './timemap.js';
+import { msToSamples, outToSrc, srcToOut } from './timemap.js';
 
 export interface SegmentOptions {
   /** 1行あたりの全角文字数の目安 */
@@ -216,6 +216,51 @@ export function buildScenes(captions: Caption[], tl: Timeline | null, srcSamples
     scenes.push({ id: newId('scn'), srcStart, srcEnd, bg: null, inset: null });
   });
   return scenes;
+}
+
+/**
+ * 目安より長いシーンを分ける(1カット1〜2秒のような短いカット割り用)。
+ * 境界はなるべく語の切れ目(トークンの開始位置)に合わせる。
+ */
+export function splitLongScenes(scenes: Scene[], tokens: Token[], tl: Timeline | null, opt: SegmentOptions): Scene[] {
+  const out: Scene[] = [];
+  const maxS = opt.sceneMaxSec * SR;
+  for (const sc of scenes) {
+    const o0 = tokenOut(tl, sc.srcStart);
+    const o1 = tokenOut(tl, sc.srcEnd);
+    const dur = o1 - o0;
+    if (dur <= maxS * 1.05) {
+      out.push(sc);
+      continue;
+    }
+    const k = Math.ceil(dur / maxS);
+    const step = dur / k;
+    // シーン内の語の開始位置(出力時刻)
+    const starts = tokens.map((t) => tokenOut(tl, t.start)).filter((o) => o > o0 && o < o1);
+    const cuts: number[] = [];
+    let prev = o0;
+    for (let i = 1; i < k; i++) {
+      const target = o0 + step * i;
+      let best = target;
+      let bestD = step * 0.35;
+      for (const s of starts) {
+        const d = Math.abs(s - target);
+        if (d < bestD && s - prev > step * 0.5 && o1 - s > step * 0.5) {
+          bestD = d;
+          best = s;
+        }
+      }
+      cuts.push(Math.round(best));
+      prev = best;
+    }
+    const srcCuts = cuts.map((c) => (tl ? outToSrc(tl, c) : c));
+    const bounds = [sc.srcStart, ...srcCuts, sc.srcEnd];
+    for (let i = 0; i < bounds.length - 1; i++) {
+      if (bounds[i + 1]! <= bounds[i]!) continue;
+      out.push({ ...sc, id: i === 0 ? sc.id : newId('scn'), srcStart: bounds[i]!, srcEnd: bounds[i + 1]!, bg: sc.bg ? { ...sc.bg } : null, inset: i === 0 ? sc.inset : null });
+    }
+  }
+  return out;
 }
 
 /** 2つのテロップの間のシーン境界(元音声の位置)。無音の中央に置く */

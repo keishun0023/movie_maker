@@ -238,6 +238,8 @@ export interface Scene {
   boundaryEdited?: boolean;
   /** このシーンの話す速さ(0.5〜2.0、初期値 1)。音程は変えずに速さだけ変える */
   speed?: number;
+  /** AI が素材を提案したときの理由(表示用) */
+  aiNote?: string;
 }
 
 export interface BgmSettings {
@@ -287,6 +289,15 @@ export interface Project {
   mix: { narrationDb: number };
   export: ExportSettings;
   safeArea: SafeAreaGuide;
+  /** 1カット(シーン)の長さの目安(秒) */
+  sceneLen: { minSec: number; maxSec: number };
+  /** Claude による素材の自動割り当て */
+  aiAssign: {
+    /** 素材のフレーム画像と文章を Claude API に送ることに同意したか */
+    consent: boolean;
+    /** 割り当てに使う素材(空なら全部) */
+    assetIds: string[];
+  };
   asr: {
     /** whisper: ローカル(whisper.cpp) / gemini: Google Gemini API(音声を送信する) */
     engine: 'whisper' | 'gemini';

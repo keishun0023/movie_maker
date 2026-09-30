@@ -13,7 +13,7 @@ import {
 } from './types.js';
 import { CUT_PRESETS, DEFAULT_CUT_PRESET, decideCuts, detectSilences, flagTokens, levelStats, protectBySpeech, removeRangesFromCuts } from './silence.js';
 import { buildTimeline, clampSpeed, identityTimeline, msToSamples, speedKeyOf, srcToOut } from './timemap.js';
-import { buildCaptions, buildScenes, carryOverScenes, DEFAULT_SEGMENT_OPTIONS, mergeCaptions, type SegmentOptions } from './segment.js';
+import { buildCaptions, buildScenes, carryOverScenes, DEFAULT_SEGMENT_OPTIONS, mergeCaptions, splitLongScenes, usableTokens, type SegmentOptions } from './segment.js';
 import { charsPerLineFor, DEFAULT_STYLE } from './captionRender.js';
 
 /** 初期値。画面でAPIから取得したモデル一覧に切り替えられる */
@@ -42,6 +42,8 @@ export function createProject(id: string, name: string): Project {
     mix: { narrationDb: 0 },
     export: { width: 1080, height: 1920, fps: 30, crf: 20, bgColor: '#161616', alsoWav: false, alsoSrt: false },
     safeArea: { show: false, topPct: 9, bottomPct: 22, rightPct: 14 },
+    sceneLen: { minSec: 2, maxSec: 5 },
+    aiAssign: { consent: false, assetIds: [] },
     asr: { engine: 'whisper', quality: 'accuracy', model: null, dtw: false, geminiModel: DEFAULT_GEMINI_MODEL, cloudConsent: false },
   };
 }
@@ -55,6 +57,8 @@ export function migrateProject(p: Partial<Project> & { id: string; name: string 
   merged.export = { ...base.export, ...(p.export ?? {}) };
   merged.safeArea = { ...base.safeArea, ...(p.safeArea ?? {}) };
   merged.asr = { ...base.asr, ...(p.asr ?? {}) };
+  merged.sceneLen = { ...base.sceneLen, ...(p.sceneLen ?? {}) };
+  merged.aiAssign = { ...base.aiAssign, ...(p.aiAssign ?? {}) };
   merged.mix = { ...base.mix, ...(p.mix ?? {}) };
   merged.schemaVersion = SCHEMA_VERSION;
   return merged;
@@ -66,7 +70,13 @@ export function presetParams(preset: CutPresetId, current: CutParams): CutParams
 }
 
 export function segmentOptionsFor(p: Project): SegmentOptions {
-  return { ...DEFAULT_SEGMENT_OPTIONS, charsPerLine: charsPerLineFor(p.style), maxLines: p.style.maxLines };
+  return {
+    ...DEFAULT_SEGMENT_OPTIONS,
+    charsPerLine: charsPerLineFor(p.style),
+    maxLines: p.style.maxLines,
+    sceneMinSec: p.sceneLen.minSec,
+    sceneMaxSec: p.sceneLen.maxSec,
+  };
 }
 
 /** 無音候補と削除区間・対応表を再計算する(テロップ・シーンの元音声時刻は変えない) */
@@ -157,7 +167,10 @@ export function autoEdit(p: Project, a: AnalysisData, opt: AutoEditOptions = { k
   const manualScenes = opt.keepManual && p.scenes.length > 1 && p.scenes.some((s) => s.boundaryEdited);
   const scenes = manualScenes
     ? normalizeScenes(p.scenes, dur)
-    : carryOverScenes(p.scenes, buildScenes(caps, tl, dur, DEFAULT_SEGMENT_OPTIONS));
+    : carryOverScenes(
+        p.scenes,
+        splitLongScenes(buildScenes(caps, tl, dur, segmentOptionsFor(next)), usableTokens(tokens), tl, segmentOptionsFor(next)),
+      );
   return { ...next, captions: markCaptionReview(caps, tl), scenes };
 }
 

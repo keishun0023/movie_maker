@@ -13,7 +13,7 @@ command -v node >/dev/null 2>&1 || brew install node
 command -v ffmpeg >/dev/null 2>&1 || brew install ffmpeg
 command -v whisper-cli >/dev/null 2>&1 || brew install whisper-cpp
 node -e 'const [a]=process.versions.node.split(".").map(Number); if (a < 20) { console.error("Node.js 20 以上が必要です (brew upgrade node)"); process.exit(1) }'
-npm ci
+npm install --no-fund --no-audit
 npm run build
 echo ""
 echo "セットアップが完了しました。start.command をダブルクリックすると起動します。"

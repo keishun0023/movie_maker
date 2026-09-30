@@ -18,6 +18,7 @@ import {
   mergeCaptionWithNext,
   mergeScene,
   rebuildCaptions,
+  runAiAssign,
   runAutoEdit,
   selectedModelId,
   setNarration,
@@ -285,17 +286,30 @@ function autoView(player: Player): HTMLElement {
       : null,
     h('p', { class: 'hint' }, 'ナレーションだけで字幕なしの動画や、手入力のテロップで作る場合は、文字起こしをせずに「3 確認して修正」へ進めます。'),
   );
-  return h('div', { class: 'panel-body' }, cutSection, asrSection, run, button('次へ: 確認して修正 →', () => store.setUi({ step: 3 }), { class: 'next' }));
+  return h('div', { class: 'panel-body' }, cutSection, asrSection, sceneLenSection(p), run, aiAssignSection(p), button('次へ: 確認して修正 →', () => store.setUi({ step: 3 }), { class: 'next' }));
 }
 
 // Gemini の設定状態(APIキーそのものは画面に返さない)
-const geminiState: { loaded: boolean; keySource: 'env' | 'file' | null; models: string[]; loading: boolean } = { loaded: false, keySource: null, models: [], loading: false };
+const geminiState: { loaded: boolean; keySource: 'env' | 'file' | null; anthropicKeySource: 'env' | 'file' | null; models: string[]; loading: boolean } = { loaded: false, keySource: null, anthropicKeySource: null, models: [], loading: false };
+
+function loadSettings() {
+  if (geminiState.loaded || geminiState.loading) return;
+  geminiState.loading = true;
+  void api.settings().then((r) => {
+    geminiState.keySource = r.geminiKeySource;
+    geminiState.anthropicKeySource = r.anthropicKeySource;
+    geminiState.loaded = true;
+    geminiState.loading = false;
+    store.emit('settings');
+  }).catch(() => (geminiState.loading = false));
+}
 
 function geminiBox(p: Project): HTMLElement {
   if (!geminiState.loaded && !geminiState.loading) {
     geminiState.loading = true;
     void api.settings().then((r) => {
       geminiState.keySource = r.geminiKeySource;
+      geminiState.anthropicKeySource = r.anthropicKeySource;
       geminiState.loaded = true;
       geminiState.loading = false;
       store.emit('settings');
@@ -352,6 +366,75 @@ function geminiBox(p: Project): HTMLElement {
       '。背景の画像・動画・BGM は送信しません。',
       checkbox(p.asr.cloudConsent, 'このプロジェクトの音声を Google Gemini API に送信することに同意する', (v) => store.commit((pp) => ({ ...pp, asr: { ...pp.asr, cloudConsent: v } }))),
     ),
+  );
+}
+
+/** 1カットの長さ */
+function sceneLenSection(p: Project): HTMLElement {
+  const presets: [string, number, number][] = [
+    ['1〜2秒(テンポ重視)', 1, 2],
+    ['2〜3秒', 2, 3],
+    ['2〜5秒(標準)', 2, 5],
+  ];
+  const cur = presets.find(([, a, b]) => a === p.sceneLen.minSec && b === p.sceneLen.maxSec);
+  return section(
+    '1カットの長さ',
+    h(
+      'div',
+      { class: 'seg-buttons' },
+      presets.map(([label, a, b]) =>
+        h('button', { type: 'button', class: cur?.[1] === a && cur?.[2] === b ? 'on' : '', onclick: () => store.commit((pp) => ({ ...pp, sceneLen: { minSec: a, maxSec: b } })) }, label),
+      ),
+    ),
+    h('p', { class: 'hint' }, '背景を切り替える間隔の目安です。自動編集(または下の「テロップ・シーンを作り直す」)のときに反映されます。長い文でも、この長さを超えるカットは語の切れ目で分けます。'),
+  );
+}
+
+/** Claude による素材の自動割り当て */
+function aiAssignSection(p: Project): HTMLElement {
+  loadSettings();
+  const visual = p.assets.filter((a) => a.status === 'ok' && (a.kind === 'image' || a.kind === 'video') && a.id !== p.narration?.assetId);
+  const chosen = new Set(p.aiAssign.assetIds.length ? p.aiAssign.assetIds : visual.map((a) => a.id));
+  const keyIn = h('input', { type: 'password', placeholder: 'sk-ant-… (Claude Console で発行)', autocomplete: 'off' });
+  const saveKey = async (k: string | null) => {
+    try {
+      const r = await api.setAnthropicKey(k);
+      geminiState.anthropicKeySource = r.anthropicKeySource;
+      toast(k ? 'APIキーを保存しました(このMacのデータフォルダに保存。プロジェクトには含めません)' : 'APIキーを削除しました', 'ok');
+      store.emit('settings');
+    } catch (e) {
+      toast((e as Error).message, 'error');
+    }
+  };
+  const toggle = (id: string, on: boolean) => {
+    const next = new Set(chosen);
+    if (on) next.add(id);
+    else next.delete(id);
+    const ids = next.size === visual.length ? [] : [...next];
+    store.commit((pp) => ({ ...pp, aiAssign: { ...pp.aiAssign, assetIds: ids } }));
+  };
+  const nFrames = visual.filter((a) => chosen.has(a.id)).length;
+  const ready = !!geminiState.anthropicKeySource && p.aiAssign.consent && p.scenes.length > 0 && nFrames > 0;
+  return section(
+    'Claude で素材を割り当てる(任意)',
+    h('p', { class: 'hint' }, '取り込んだ画像・動画の中身を Claude が見て、各カットで話している内容に合う素材と、動画のどの場面から使うかを選びます。結果は提案なので、あとから自由に変えられます(元に戻す も可)。'),
+    geminiState.anthropicKeySource === 'env'
+      ? h('div', { class: 'ok-box' }, '環境変数 ANTHROPIC_API_KEY のキーを使います')
+      : geminiState.anthropicKeySource === 'file'
+        ? h('div', { class: 'ok-box' }, 'Claude APIキー: 設定済み ', button('削除', () => void saveKey(null), { class: 'small' }))
+        : h('div', null, h('div', { class: 'row gap' }, keyIn, button('保存', () => void saveKey(keyIn.value.trim() || null), { class: 'primary' })), h('p', { class: 'hint' }, 'キーは https://platform.claude.com の API Keys で発行できます。利用料は Claude API の従量課金です(Claude の月額プランとは別)。')),
+    visual.length
+      ? field('使う素材', h('div', { class: 'ai-assets' }, visual.map((a) => checkbox(chosen.has(a.id), `${a.kind === 'video' ? '🎞' : '🖼'} ${a.name}`, (v) => toggle(a.id, v)))))
+      : h('p', { class: 'warn' }, '画像・動画の素材がまだありません。'),
+    h(
+      'div',
+      { class: 'note' },
+      h('b', null, '送信される内容: '),
+      `選んだ素材のフレーム画像(動画は数枚ずつ、長辺384px)、各カットのテロップの文章${p.script.trim() ? '、台本' : ''}。音声や元のファイルそのものは送りません。`,
+      checkbox(p.aiAssign.consent, 'これらを Claude API(Anthropic)に送信することに同意する', (v) => store.commit((pp) => ({ ...pp, aiAssign: { ...pp.aiAssign, consent: v } }))),
+    ),
+    button(`Claude で ${p.scenes.length} カットに素材を割り当てる`, () => void runAiAssign(), { class: 'primary big', disabled: !ready }),
+    jobsBox(['ai-assign']),
   );
 }
 
@@ -437,6 +520,7 @@ function sceneInspector(s: Scene, player: Player): HTMLElement {
     'div',
     null,
     h('h3', null, `シーン #${idx + 1}`),
+    s.aiNote ? h('p', { class: 'note' }, `Claude の提案理由: ${s.aiNote}`) : null,
     r ? h('p', { class: 'hint' }, `${fmtSec(r.outStart / SR)} – ${fmtSec(r.outEnd / SR)}(${dur.toFixed(2)}秒)`) : null,
     h(
       'div',

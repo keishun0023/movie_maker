@@ -130,7 +130,7 @@ export function defaultBg(asset: Asset, p: Project): BgPlacement {
 export function assignBg(sceneId: string, assetId: string) {
   const asset = store.p.assets.find((a) => a.id === assetId);
   if (!asset || (asset.kind !== 'image' && asset.kind !== 'video')) return toast('背景には画像か動画を割り当ててください');
-  store.commit((p) => ({ ...p, scenes: p.scenes.map((s) => (s.id === sceneId ? { ...s, bg: defaultBg(asset, p) } : s)) }));
+  store.commit((p) => ({ ...p, scenes: p.scenes.map((s) => (s.id === sceneId ? { ...s, bg: defaultBg(asset, p), aiNote: undefined } : s)) }));
 }
 
 /** 選択した素材を、選択中のシーンから順番に仮配置する(内容は判断しない) */
@@ -495,4 +495,33 @@ export async function downloadModel(id: string) {
   } catch (e) {
     toast((e as Error).message, 'error');
   }
+}
+
+/** Claude に素材の割り当てを提案してもらい、シーンに反映する(元に戻す で取り消せる) */
+export async function runAiAssign() {
+  await store.save();
+  let job: JobInfo;
+  try {
+    job = await api.aiAssign(JSON.parse(JSON.stringify(store.p)) as Project);
+  } catch (e) {
+    return toast((e as Error).message, 'error');
+  }
+  const done = await jobPromise(job);
+  if (done.status !== 'done') {
+    if (done.status === 'failed') toast('素材の割り当てに失敗しました: ' + done.error, 'error');
+    return;
+  }
+  const { assignments, notes } = done.result as { assignments: { sceneId: string; assetId: string; startSec: number; reason: string }[]; notes: string[] };
+  const byScene = new Map(assignments.map((a) => [a.sceneId, a]));
+  store.commit((p) => ({
+    ...p,
+    scenes: p.scenes.map((sc) => {
+      const a = byScene.get(sc.id);
+      const asset = a ? p.assets.find((x) => x.id === a.assetId) : undefined;
+      if (!a || !asset) return sc;
+      return { ...sc, bg: { ...defaultBg(asset, p), mode: 'independent', startSec: a.startSec }, aiNote: a.reason };
+    }),
+  }));
+  toast(`Claude の提案で ${assignments.length} カットに素材を割り当てました(元に戻す で取り消せます)\n${notes.join('\n')}`, 'ok', 8000);
+  store.setUi({ step: 3, leftTab: 'scenes' });
 }

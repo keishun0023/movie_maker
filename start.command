@@ -4,7 +4,10 @@ cd "$(dirname "$0")"
 for b in /opt/homebrew/bin /usr/local/bin; do [ -d "$b" ] && PATH="$b:$PATH"; done
 export PATH
 if [ ! -d node_modules ]; then
-  ./setup.sh || { echo "セットアップに失敗しました。"; read -r -p "Enter で閉じます"; exit 1; }
+  bash ./setup.sh || { echo "セットアップに失敗しました。"; read -r -p "Enter で閉じます"; exit 1; }
+elif [ ! -d node_modules/@anthropic-ai/sdk ]; then
+  # 更新で追加されたライブラリを入れる
+  npm install --no-fund --no-audit || { read -r -p "npm install に失敗しました。Enter で閉じます"; exit 1; }
 fi
 npm run build --silent || { read -r -p "ビルドに失敗しました。Enter で閉じます"; exit 1; }
 PORT="${PORT:-5178}"

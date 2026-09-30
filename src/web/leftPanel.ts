@@ -107,6 +107,7 @@ function scenesView(seek: (t: number) => void): HTMLElement {
         h('div', { class: 'scene-title' }, `#${i + 1}  ${fmtSec(r.outStart / SR)}–${fmtSec(r.outEnd / SR)}`, h('span', { class: 'hint' }, ` ${dur.toFixed(1)}秒`), s.speed && s.speed !== 1 ? h('span', { class: 'tag' }, `${s.speed}倍`) : null),
         h('div', { class: 'scene-caps' }, texts.length ? texts.join(' / ') : '(テロップなし)'),
         dur <= 0 ? h('div', { class: 'warn' }, '無音カットで長さが0になりました') : null,
+        s.aiNote ? h('div', { class: 'hint' }, `🤖 ${s.aiNote}`) : null,
       ),
     );
     card.addEventListener('click', () => {

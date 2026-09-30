@@ -5,7 +5,8 @@ import path from 'node:path';
 import type { Asset, JobInfo, Project, StylePreset, Timeline, Transcript } from '../shared/types.js';
 import { speechChunks, tokensFromChunks } from '../shared/chunks.js';
 import { assertGeminiModel, geminiTranscribe, listGeminiModels } from './asr/gemini.js';
-import { geminiKey, geminiKeySource, setGeminiKey } from './secrets.js';
+import { anthropicKey, anthropicKeySource, geminiKey, geminiKeySource, setAnthropicKey, setGeminiKey } from './secrets.js';
+import { aiAssign } from './ai/assign.js';
 import { outToSrc } from '../shared/timemap.js';
 import { hintTerms } from '../shared/script.js';
 import { buildPreview, importUpload, removeAssetFiles } from './assets.js';
@@ -254,7 +255,41 @@ router.get('/api/projects/:id/analysis/:key', async (req, res) => {
 
 // ---- 設定(APIキー) ----
 
-router.get('/api/settings', (_req, res) => sendJson(res, 200, { geminiKeySource: geminiKeySource() }));
+router.get('/api/settings', (_req, res) => sendJson(res, 200, { geminiKeySource: geminiKeySource(), anthropicKeySource: anthropicKeySource() }));
+
+function cleanKey(raw: unknown): string {
+  // キーの形式は変わることがあるので、ヘッダーに使える文字かだけを確認する
+  const k = String(raw ?? '').trim().replace(/^["'“”]+|["'“”]+$/g, '');
+  if (k && !/^[\x21-\x7e]{10,1000}$/.test(k)) throw new HttpError(400, 'APIキーに使えない文字(空白や全角文字など)が含まれています。コピーし直して貼り付けてください');
+  return k;
+}
+
+router.put('/api/settings/anthropic-key', async (req, res) => {
+  const body = await readJson<{ key?: string | null }>(req);
+  const k = cleanKey(body.key);
+  await setAnthropicKey(k || null);
+  sendJson(res, 200, { anthropicKeySource: anthropicKeySource() });
+});
+
+// ---- Claude による素材の自動割り当て ----
+
+router.post('/api/projects/:id/ai-assign', async (req, res) => {
+  const id = assertId(req.params.id!);
+  const body = await readJson<{ project: Project }>(req, 50 * 1024 * 1024);
+  const project = body.project;
+  if (!project || project.id !== id) throw new HttpError(400, 'プロジェクトが一致しません');
+  if (!project.aiAssign?.consent) throw new HttpError(400, '素材の画像と文章を Claude API に送信することへの同意が必要です。');
+  const apiKey = anthropicKey();
+  if (!apiKey) throw new HttpError(400, 'Claude の APIキーが設定されていません。');
+  const job = enqueue({
+    type: 'ai-assign',
+    label: 'Claude で素材を割り当て',
+    projectId: id,
+    queue: 'analysis',
+    runner: (ctx) => aiAssign({ project, apiKey, signal: ctx.signal, progress: ctx.progress }),
+  });
+  sendJson(res, 200, job);
+});
 
 router.put('/api/settings/gemini-key', async (req, res) => {
   const body = await readJson<{ key?: string | null }>(req);

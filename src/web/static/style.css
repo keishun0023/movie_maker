@@ -178,3 +178,5 @@ a { color: var(--accent); }
   .proj-name { width: 120px; }
 }
 .media-error { position: absolute; left: 40px; right: 40px; top: 120px; font-size: 34px; color: #f2c14e; background: rgba(0,0,0,0.6); padding: 20px; border-radius: 12px; }
+.ai-assets { max-height: 180px; overflow-y: auto; border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; }
+.ai-assets .check { margin: 3px 0; }
