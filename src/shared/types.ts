@@ -121,6 +121,8 @@ export interface CutSettings {
   params: CutParams;
   /** 「この間は残す」を指定した元音声の範囲 */
   keepRanges: { start: number; end: number }[];
+  /** false にすると、認識結果で「発話の可能性あり」と判断した間(保護)も詰める */
+  protectSpeech?: boolean;
 }
 
 export interface SilenceCandidate {

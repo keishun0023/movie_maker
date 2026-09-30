@@ -131,7 +131,8 @@ async function renderSceneSegment(
       if (bg.shortMode === 'loop') args.push('-stream_loop', '-1');
       if (bg.startSec > 0) args.push('-ss', bg.startSec.toFixed(3));
       args.push('-i', file);
-      chain = `[${inputs}:v]fps=${fps}` + (bg.shortMode === 'freeze' ? `,tpad=stop_mode=clone:stop_duration=${(dur + 1).toFixed(3)}` : '') + '[vin]';
+      // 開始時刻がずれている動画(スマホのMOVなど)でも先頭フレームから表示されるよう、時刻を0からにそろえる
+      chain = `[${inputs}:v]setpts=PTS-STARTPTS,fps=${fps}` + (bg.shortMode === 'freeze' ? `,tpad=stop_mode=clone:stop_duration=${(dur + 1).toFixed(3)}` : '') + '[vin]';
       filters.push(chain);
       chain = '[vin]';
       inputs++;

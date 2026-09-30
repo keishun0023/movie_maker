@@ -18,6 +18,8 @@ interface BgLayer {
   video?: HTMLVideoElement;
   scene: Scene;
   asset?: Asset;
+  /** 画像・動画の最初のフレームが表示できる状態になったか */
+  ready: boolean;
 }
 
 export class Player {
@@ -35,6 +37,11 @@ export class Player {
   private narrGain: GainNode | null = null;
   private bgmGain: GainNode | null = null;
   private layer: BgLayer | null = null;
+  /** 表示を切り替える予定だが、まだ読み込み中の背景(読み込むまで前の背景を出したままにする) */
+  private pendingLayer: BgLayer | null = null;
+  /** 次のカットの背景を先に読み込んでおく */
+  private prepared = new Map<string, BgLayer>();
+  private layerZ = 1;
   private tl: Timeline | null = null;
   private captionTimes: CaptionTiming[] = [];
   private captionMap = new Map<string, Caption>();
@@ -46,7 +53,7 @@ export class Player {
   private capId: string | null = null;
   private stopAt: number | null = null;
   private mode: 'edited' | 'source' = 'edited';
-  private drag: { startX: number; startY: number; dx: number; dy: number; capId: string } | null = null;
+  private drag: { startX: number; startY: number; dx: number; dy: number; capId: string; only: boolean } | null = null;
   scale = 0.3;
   onTick: ((t: number) => void) | null = null;
 
@@ -91,10 +98,16 @@ export class Player {
     if (this.layer) {
       const cur = p.scenes.find((s) => s.id === this.layer!.scene.id);
       if (!cur || this.layerKey(cur, p) !== this.layer.key) {
-        this.layer.video?.pause();
-        this.layer.el.remove();
+        this.disposeLayer(this.layer);
         this.layer = null;
       }
+    }
+    // 設定が変わったら先読みは作り直す
+    for (const l of this.prepared.values()) this.disposeLayer(l);
+    this.prepared.clear();
+    if (this.pendingLayer) {
+      this.disposeLayer(this.pendingLayer);
+      this.pendingLayer = null;
     }
     this.fit();
     void this.refreshAudio(p);
@@ -280,13 +293,14 @@ export class Player {
     // 背景
     if (!scene) {
       if (this.layer) {
-        this.layer.el.remove();
+        this.disposeLayer(this.layer);
         this.layer = null;
       }
     } else {
-      const key = this.layerKey(scene, p);
-      if (!this.layer || this.layer.key !== key) this.buildLayer(scene, p, key);
-      this.updateLayer(t, sr!, p, W, H);
+      this.switchLayer(scene, p);
+      if (this.layer) this.updateLayer(this.layer, t, sr!, W, H, true);
+      if (this.pendingLayer) this.updateLayer(this.pendingLayer, t, sr!, W, H, true);
+      this.prefetchNext(sr!, p, W, H);
     }
     // 差し込み画像
     const inset = scene?.inset;
@@ -304,36 +318,109 @@ export class Player {
     this.renderGuide(p, W, H);
   }
 
-  private buildLayer(scene: Scene, p: Project, key: string) {
-    this.layer?.video?.pause();
-    this.layer?.el.remove();
+  /** 背景レイヤーを作る(最初は非表示。読み込めたら ready) */
+  private makeLayer(scene: Scene, p: Project, key: string): BgLayer {
     const el = h('div', { class: 'bg-layer' });
-    const layer: BgLayer = { key, el, scene };
+    el.style.visibility = 'hidden';
+    const layer: BgLayer = { key, el, scene, ready: true };
     const bg = scene.bg;
     const asset = bg ? p.assets.find((a) => a.id === bg.assetId) : undefined;
     if (bg && asset && asset.status === 'ok') {
       layer.asset = asset;
+      layer.ready = false;
+      const markReady = () => {
+        if (layer.ready) return;
+        layer.ready = true;
+        if (this.pendingLayer === layer) this.showLayer(layer);
+      };
       if (asset.kind === 'image') {
-        el.appendChild(h('img', { class: 'bg-media', src: mediaUrl(p.id, asset.id, 'preview'), alt: '' }));
+        const img = h('img', { class: 'bg-media', src: mediaUrl(p.id, asset.id, 'preview'), alt: '' });
+        img.addEventListener('load', markReady);
+        img.addEventListener('error', markReady);
+        el.appendChild(img);
+        if (img.complete) layer.ready = true;
       } else if (asset.kind === 'video') {
         const v = h('video', { class: 'bg-media', src: mediaUrl(p.id, asset.id, 'preview'), preload: 'auto', playsinline: true });
         v.muted = !bg.audio || bg.mode === 'synced';
         v.volume = Math.min(1, dbToLin(bg.volumeDb));
         if (bg.shortMode === 'loop') v.loop = true;
+        // 最初のフレームを表示できるようになったら切り替える
+        v.addEventListener('loadeddata', markReady);
+        v.addEventListener('seeked', () => {
+          if (v.readyState >= 2) markReady();
+        });
         v.addEventListener('error', () => {
           el.appendChild(h('div', { class: 'media-error' }, `「${asset.name}」をこのブラウザで再生できません(プレビューのみ。書き出しには影響しません)。Chrome か Safari をお使いください。`));
+          markReady();
         });
         el.appendChild(v);
         layer.video = v;
-      }
+      } else layer.ready = true;
     }
     this.bgHost.appendChild(el);
-    this.layer = layer;
+    return layer;
   }
 
-  private updateLayer(t: number, sr: { outStart: number; outEnd: number }, p: Project, W: number, H: number) {
-    const layer = this.layer;
-    if (!layer || !layer.asset || !layer.scene.bg) return;
+  private disposeLayer(l: BgLayer) {
+    l.video?.pause();
+    l.video?.removeAttribute('src');
+    l.el.remove();
+  }
+
+  /** 新しい背景を表示し、前の背景を片付ける(新しい背景が描ける状態になってから入れ替えるので暗転しない) */
+  private showLayer(l: BgLayer) {
+    l.el.style.visibility = 'visible';
+    l.el.style.zIndex = String(++this.layerZ);
+    const old = this.layer;
+    this.layer = l;
+    if (this.pendingLayer === l) this.pendingLayer = null;
+    if (old && old !== l) this.disposeLayer(old);
+  }
+
+  private switchLayer(scene: Scene, p: Project) {
+    const key = this.layerKey(scene, p);
+    if (this.layer?.key === key) {
+      if (this.pendingLayer) {
+        this.disposeLayer(this.pendingLayer);
+        this.pendingLayer = null;
+      }
+      return;
+    }
+    if (this.pendingLayer?.key === key) return; // 読み込み待ち
+    if (this.pendingLayer) {
+      this.disposeLayer(this.pendingLayer);
+      this.pendingLayer = null;
+    }
+    let next = this.prepared.get(key);
+    if (next) this.prepared.delete(key);
+    else next = this.makeLayer(scene, p, key);
+    if (next.ready || !this.layer) this.showLayer(next);
+    else this.pendingLayer = next;
+  }
+
+  /** 次のカットの背景を、開始位置まで進めた状態で先に読み込んでおく */
+  private prefetchNext(sr: { id: string; outStart: number; outEnd: number }, p: Project, W: number, H: number) {
+    const i = this.sceneRanges.findIndex((r) => r.id === sr.id);
+    const nr = this.sceneRanges[i + 1];
+    const nextScene = nr ? p.scenes.find((s) => s.id === nr.id) : undefined;
+    const want = nextScene && nextScene.bg ? this.layerKey(nextScene, p) : null;
+    for (const [k, l] of this.prepared) {
+      if (k !== want) {
+        this.disposeLayer(l);
+        this.prepared.delete(k);
+      }
+    }
+    if (!want || !nextScene || !nr || want === this.layer?.key || want === this.pendingLayer?.key) return;
+    let l = this.prepared.get(want);
+    if (!l) {
+      l = this.makeLayer(nextScene, p, want);
+      this.prepared.set(want, l);
+    }
+    this.updateLayer(l, nr.outStart, nr, W, H, false);
+  }
+
+  private updateLayer(layer: BgLayer, t: number, sr: { outStart: number; outEnd: number }, W: number, H: number, active: boolean) {
+    if (!layer.asset || !layer.scene.bg) return;
     const bg = layer.scene.bg;
     const a = layer.asset;
     const media = layer.el.firstElementChild as HTMLElement | null;
@@ -355,7 +442,7 @@ export class Player {
       // 元動画と同期する場合は、シーンの話す速さで映像も再生する
       const rate = bg.mode === 'synced' ? layer.scene.speed ?? 1 : 1;
       if (Math.abs(v.playbackRate - rate) > 0.001) v.playbackRate = rate;
-      const playing = this.isPlaying() && this.mode === 'edited';
+      const playing = active && this.isPlaying() && this.mode === 'edited';
       const frozen = bg.mode !== 'synced' && bg.shortMode === 'freeze' && dur > 0 && want >= dur - 0.05;
       if (playing && !frozen) {
         if (Math.abs(v.currentTime - want) > (bg.mode === 'synced' ? 0.12 : 0.25)) v.currentTime = want;
@@ -429,7 +516,7 @@ export class Player {
     const pt = this.toStage(e);
     const b = this.capBox;
     if (b && this.capId && pt.x >= b.x && pt.x <= b.x + b.w && pt.y >= b.y && pt.y <= b.y + b.h) {
-      this.drag = { startX: pt.x, startY: pt.y, dx: 0, dy: 0, capId: this.capId };
+      this.drag = { startX: pt.x, startY: pt.y, dx: 0, dy: 0, capId: this.capId, only: e.altKey };
       store.setUi({ selection: { kind: 'caption', id: this.capId } }, 'select');
       e.preventDefault();
     }
@@ -458,10 +545,12 @@ export class Player {
     const nx = Math.round(Math.max(0, Math.min(1, st.x + d.dx / W)) * 1000) / 1000;
     const ny = Math.round(Math.max(0, Math.min(1, st.y + d.dy / H)) * 1000) / 1000;
     // 確定後は書き出しと同じ描画で表示し直す
-    if (store.state.ui.applyDragToAll) {
-      store.commit((p) => ({ ...p, style: { ...p.style, x: nx, y: ny } }));
-    } else {
+    // 通常は全テロップ共通の位置を動かす。⌥(Option)を押しながら、またはすでに個別の位置があるテロップは、そのテロップだけ動かす
+    const own = cap.style?.x !== undefined || cap.style?.y !== undefined;
+    if (d.only || own) {
       store.commit((p) => ({ ...p, captions: p.captions.map((c) => (c.id === d.capId ? { ...c, style: { ...c.style, x: nx, y: ny } } : c)) }));
+    } else {
+      store.commit((p) => ({ ...p, style: { ...p.style, x: nx, y: ny } }));
     }
   }
 }

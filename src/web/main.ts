@@ -1,6 +1,6 @@
 // 画面の起動と全体レイアウト。
 import { SR, type Project } from '../shared/types.js';
-import { timelineOf } from '../shared/project.js';
+import { recomputeCut, timelineOf } from '../shared/project.js';
 import { formatTime, srcToOut } from '../shared/timemap.js';
 import { api } from './api.js';
 import { button, fmtSec, h, mount, toast } from './dom.js';
@@ -110,13 +110,18 @@ async function openEditor(id: string) {
       checkedAssets: [],
       leftCollapsed: window.innerWidth < 1100,
       rightCollapsed: false,
-      applyDragToAll: false,
     },
   });
   if (!project.asr.model && system && project.asr.quality !== system.recommend.defaultQuality && !project.transcript) {
     store.state.project = { ...project, asr: { ...project.asr, quality: system.recommend.defaultQuality } };
   }
   await loadAnalysis();
+  // 無音カットの判定ルールが更新されている場合に備え、開いたときにカットを計算し直す(元に戻す履歴には積まない)
+  if (store.state.analysis && project.narration) {
+    const a = store.state.analysis;
+    const re = recomputeCut(store.state.project, a);
+    if (re.timeline?.hash !== store.state.project.timeline?.hash) store.commit(() => re, { noHistory: true });
+  }
   void ensureFont(project.style.fontId);
   document.title = `${project.name} - 縦型動画メーカー`;
 

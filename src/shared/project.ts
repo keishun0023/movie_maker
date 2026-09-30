@@ -85,7 +85,7 @@ export function segmentOptionsFor(p: Project): SegmentOptions {
 export function recomputeCut(p: Project, a: AnalysisData): Project {
   const dur = p.narration?.durationSamples ?? a.durationSamples;
   let cands = detectSilences(a, p.cut.params.sensitivityDb, 50);
-  if (p.transcript) cands = protectBySpeech(cands, p.transcript.tokens, a, p.cut.params.sensitivityDb);
+  if (p.transcript && p.cut.protectSpeech !== false) cands = protectBySpeech(cands, p.transcript.tokens, a, p.cut.params.sensitivityDb);
   const cuts = decideCuts(cands, p.cut.params, dur, p.cut.keepRanges);
   const timeline = buildTimeline(dur, removeRangesFromCuts(cuts, dur), p.cut.params.fadeMs, speedRangesOf(p.scenes), p.cut.params.overlapMs ?? 0);
   return { ...p, silenceCandidates: cands, timeline };

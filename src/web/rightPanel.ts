@@ -211,6 +211,17 @@ function autoView(player: Player): HTMLElement {
   const summary = tl
     ? h('div', { class: 'ok-box' }, `元の長さ ${fmtSec(tl.srcSamples / SR)} → 編集後 ${fmtSec(tl.outSamples / SR)}(${cutCount}か所カット、${((1 - tl.outSamples / Math.max(1, tl.srcSamples)) * 100).toFixed(0)}%短縮)`)
     : h('p', { class: 'warn' }, '先に「1 素材を取り込む」でナレーションを設定してください。');
+  const protectedN = p.silenceCandidates.filter((c) => c.protectedBySpeech).length;
+  const keptN = p.cut.keepRanges.length;
+  const protectBox = h(
+    'div',
+    null,
+    protectedN || p.cut.protectSpeech === false
+      ? h('p', { class: 'hint' }, p.cut.protectSpeech === false ? '発話保護は無効です(黄色の間も詰めます)。' : `発話の可能性があるため残した間: ${protectedN} か所(タイムラインの「元音声」で黄色)`)
+      : null,
+    keptN ? h('p', { class: 'hint' }, `「この間は残す」を指定した間: ${keptN} か所(緑)`, button('指定をすべて解除', () => applyCutChange((pp) => ({ ...pp, cut: { ...pp.cut, keepRanges: [] } })), { class: 'small' })) : null,
+    checkbox(p.cut.protectSpeech !== false, '小声の発話かもしれない間は削らない(発話保護)', (v) => applyCutChange((pp) => ({ ...pp, cut: { ...pp.cut, protectSpeech: v } }))),
+  );
   const selCand = store.state.ui.selectedCandidate ? p.silenceCandidates.find((c) => c.id === store.state.ui.selectedCandidate) : null;
   const compare = selCand && tl
     ? h(
@@ -231,6 +242,7 @@ function autoView(player: Player): HTMLElement {
     presetRow,
     params,
     summary,
+    protectBox,
     button('タイムラインで元音声を表示', () => store.setUi({ timelineView: 'source' })),
     compare,
   );
@@ -492,7 +504,7 @@ function selectedView(player: Player): HTMLElement {
   return h(
     'div',
     null,
-    h('p', { class: 'hint' }, 'タイムラインやシーン一覧でシーン・テロップを選ぶと、ここで編集できます。プレビューのテロップはドラッグで位置を変えられます。'),
+    h('p', { class: 'hint' }, 'タイムラインやシーン一覧でシーン・テロップを選ぶと、ここで編集できます。プレビューのテロップはドラッグで全テロップの位置を変えられます(⌥Option を押しながらだとそのテロップだけ)。'),
     button('再生位置にテロップを追加', () => addCaptionAt(store.state.ui.playhead)),
     button('再生位置でシーンを分割', () => splitSceneAt(store.state.ui.playhead)),
   );
@@ -633,6 +645,7 @@ function captionInspector(c: Caption, player: Player): HTMLElement {
   const ov = c.style ?? {};
   const setOv = (patch: Partial<CaptionStyle>, key?: string) => updateCaption(c.id, (cc) => ({ ...cc, style: { ...cc.style, ...patch } }), key ? `${key}-${c.id}` : undefined, key ? 'right' : '');
   const overridden = Object.keys(ov).length > 0;
+  const ownPos = ov.x !== undefined || ov.y !== undefined;
   const startIn = numInput(timing ? timing.outStart / SR : 0, {
     min: 0,
     step: 0.05,
@@ -665,22 +678,39 @@ function captionInspector(c: Caption, player: Player): HTMLElement {
     c.timingEdited ? button('時刻を自動に戻す', () => updateCaption(c.id, (cc) => ({ ...cc, timingEdited: false }), undefined, '')) : null,
     section(
       'このテロップだけの見た目',
-      h(
-        'div',
-        { class: 'seg-buttons' },
-        button('上', () => setOv({ y: 0.2 })),
-        button('中央', () => setOv({ y: 0.43 })),
-        button('下', () => setOv({ y: 0.72 })),
-      ),
-      h('div', { class: 'row gap' }, field('横(%)', numInput(style.x * 100, { min: 0, max: 100, step: 0.5, onChange: (v) => setOv({ x: v / 100 }) })), field('縦(%)', numInput(style.y * 100, { min: 0, max: 100, step: 0.5, onChange: (v) => setOv({ y: v / 100 }) }))),
+      ownPos
+        ? h(
+            'div',
+            null,
+            h('p', { class: 'note' }, 'このテロップは個別の位置になっています(ほかのテロップの位置とは連動しません)。'),
+            h('div', { class: 'seg-buttons' }, button('上', () => setOv({ y: 0.2 })), button('中央', () => setOv({ y: 0.43 })), button('下', () => setOv({ y: 0.72 }))),
+            h('div', { class: 'row gap' }, field('横(%)', numInput(style.x * 100, { min: 0, max: 100, step: 0.5, onChange: (v) => setOv({ x: v / 100 }) })), field('縦(%)', numInput(style.y * 100, { min: 0, max: 100, step: 0.5, onChange: (v) => setOv({ y: v / 100 }) }))),
+            button('共通の位置に戻す', () => updateCaption(c.id, withoutOwnPosition, undefined, '')),
+          )
+        : h(
+            'div',
+            null,
+            h('p', { class: 'hint' }, '位置は全テロップ共通です(プレビューでドラッグすると全部動きます)。このテロップだけずらしたいときは、⌥(Option)を押しながらドラッグするか、下のボタンを押してください。'),
+            button('このテロップだけ位置をずらす', () => setOv({ x: style.x, y: style.y })),
+          ),
       field('文字サイズ', slider(style.size, { min: 30, max: 160, step: 1, format: (v) => `${v}px`, onChange: (v) => setOv({ size: v }, 'ovsize') })),
       field('文字色', colorInput(style.color, (v) => setOv({ color: v }, 'ovcolor'))),
       field('縁取りの色', colorInput(style.strokeColor, (v) => setOv({ strokeColor: v }, 'ovstroke'))),
       fontSelect(style.fontId, (v) => setOv({ fontId: v })),
-      checkbox(store.state.ui.applyDragToAll, 'プレビューでのドラッグを全テロップ共通の位置にする', (v) => store.setUi({ applyDragToAll: v })),
       overridden ? button('共通設定に戻す', () => updateCaption(c.id, (cc) => { const { style: _s, ...rest } = cc; void _s; return rest; }, undefined, '')) : null,
     ),
   );
+}
+
+/** テロップの個別の位置(x, y)だけを外す。ほかの個別設定(色など)は残す */
+function withoutOwnPosition(c: Caption): Caption {
+  const rest = { ...c.style };
+  delete rest.x;
+  delete rest.y;
+  const next: Caption = { ...c };
+  if (Object.keys(rest).length) next.style = rest;
+  else delete next.style;
+  return next;
 }
 
 function fontSelect(value: string, onChange: (v: string) => void): HTMLElement {
@@ -727,7 +757,7 @@ function styleView(): HTMLElement {
       '位置',
       h('div', { class: 'seg-buttons' }, button('上', () => set({ y: 0.2 })), button('中央', () => set({ y: 0.43 })), button('下', () => set({ y: 0.72 }))),
       h('div', { class: 'row gap' }, field('横(%)', numInput(s.x * 100, { min: 0, max: 100, step: 0.5, onChange: (v) => set({ x: v / 100 }) })), field('縦(%)', numInput(s.y * 100, { min: 0, max: 100, step: 0.5, onChange: (v) => set({ y: v / 100 }) }))),
-      h('p', { class: 'hint' }, 'プレビュー上のテロップをドラッグしても動かせます(選択中タブの設定で共通/個別を切り替え)。'),
+      h('p', { class: 'hint' }, 'プレビュー上のテロップをドラッグしても全テロップの位置を動かせます(⌥Option を押しながらドラッグすると、そのテロップだけ)。'),
       checkbox(p.safeArea.show, 'SNSのUIが重なりやすい領域の目安を表示', (v) => store.commit((pp) => ({ ...pp, safeArea: { ...pp.safeArea, show: v } }))),
       p.safeArea.show
         ? h(

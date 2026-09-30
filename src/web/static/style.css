@@ -131,6 +131,8 @@ a { color: var(--accent); }
 .stage-wrap { flex: 1; position: relative; overflow: hidden; min-height: 200px; }
 .stage { position: absolute; left: 50%; top: 50%; transform-origin: center; overflow: hidden; background: #161616; box-shadow: 0 0 0 1px #333; }
 .bg-host, .bg-layer { position: absolute; inset: 0; overflow: hidden; }
+/* 背景レイヤーの重なり順は背景の中だけで完結させる(テロップより前に出ないように) */
+.bg-host { z-index: 0; isolation: isolate; }
 .bg-layer { transform-origin: center; }
 .bg-media { position: absolute; max-width: none; object-fit: fill; }
 .inset { position: absolute; display: none; object-fit: fill; }

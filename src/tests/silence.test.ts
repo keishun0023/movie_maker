@@ -109,3 +109,17 @@ test('完全な無音に出た認識語は幻覚の可能性として印を付�
   assert.ok(f[1]!.flags!.includes('silence'));
   assert.ok(f[1]!.flags!.includes('hallucination'));
 });
+
+test('文字量から推定した時刻(Gemini)の語では、無音を「発話の可能性あり」として残さない', () => {
+  const pcm = synth(4, [
+    [0.2, 1.0, 0.5],
+    [1.5, 2.0, 0.002], // 雑音より少し大きい音(息など)
+    [3.0, 3.5, 0.5],
+  ], 0.0003);
+  const a = computeAnalysis(pcm);
+  const cands = detectSilences(a);
+  const est: Token = { id: 'g', text: 'です', start: 1.55 * SR, end: 1.95 * SR, p: 0.9, seg: 0, timing: 'chunk' };
+  assert.ok(protectBySpeech(cands, [est], a).every((c) => !c.protectedBySpeech));
+  const precise: Token = { ...est, timing: 'token' };
+  assert.ok(protectBySpeech(cands, [precise], a).some((c) => c.protectedBySpeech));
+});

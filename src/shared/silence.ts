@@ -148,7 +148,11 @@ export function flagTokens(tokens: Token[], a: AnalysisData, sensitivityDb = 0):
 /** 認識トークンで発話がありそうな無音候補を保護する */
 export function protectBySpeech(cands: SilenceCandidate[], tokens: Token[], a: AnalysisData, sensitivityDb = 0): SilenceCandidate[] {
   const st = levelStats(a, sensitivityDb);
-  const usable = tokens.filter((t) => !t.flags?.includes('silence') && !t.flags?.includes('hallucination') && t.p >= 0.2 && t.text.trim() !== '');
+  // 語ごとの正確な時刻があるトークンだけで判断する。
+  // 文字量から推定した時刻(Gemini の chunk)や区間単位の時刻では、無音の中に語があるように見えてしまうため使わない
+  const usable = tokens.filter(
+    (t) => (t.timing === 'token' || t.timing === 'dtw') && !t.flags?.includes('silence') && !t.flags?.includes('hallucination') && t.p >= 0.2 && t.text.trim() !== '',
+  );
   return cands.map((c) => {
     let prot = false;
     for (const t of usable) {

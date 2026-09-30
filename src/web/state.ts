@@ -19,7 +19,6 @@ export interface UiState {
   checkedAssets: string[];
   leftCollapsed: boolean;
   rightCollapsed: boolean;
-  applyDragToAll: boolean;
 }
 
 export interface AppState {
