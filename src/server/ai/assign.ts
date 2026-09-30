@@ -33,8 +33,20 @@ interface Picture {
 
 const SCALE = "scale='if(gt(iw,ih),384,-2)':'if(gt(iw,ih),-2,384)'";
 
+/** Mac ではハードウェアで動画を読む(使えない形式は自動で通常の読み込みになる) */
+const HWACCEL = process.platform === 'darwin' ? ['-hwaccel', 'videotoolbox'] : [];
+
+/** 読み込みに使う動画ファイル。取り込み時に作った軽い変換済み動画があればそちらを使う(同じ時刻) */
+function videoSource(p: Project, a: Asset): { file: string; proxy: boolean } {
+  if (a.proxy) {
+    const f = sub(p.id, a.proxy);
+    if (fs.existsSync(f)) return { file: f, proxy: true };
+  }
+  return { file: sub(p.id, a.file), proxy: false };
+}
+
 /** 動画の場面の切り替わり(秒)を検出する(キャッシュあり) */
-async function detectCuts(file: string, cache: string, signal: AbortSignal): Promise<number[]> {
+async function detectCuts(src: { file: string; proxy: boolean }, dur: number, cache: string, signal: AbortSignal, onProgress: (v: number) => void): Promise<number[]> {
   if (fs.existsSync(cache)) {
     try {
       return JSON.parse(await fsp.readFile(cache, 'utf8')) as number[];
@@ -43,8 +55,14 @@ async function detectCuts(file: string, cache: string, signal: AbortSignal): Pro
     }
   }
   const cuts: number[] = [];
-  await runOk(requireTool('ffmpeg'), ['-v', 'info', '-nostats', '-i', file, '-an', '-sn', '-vf', "scale=160:-2,select='gt(scene\\,0.3)',showinfo", '-f', 'null', '-'], {
+  const args = ['-v', 'info', '-nostats', '-progress', 'pipe:1', ...(src.proxy ? [] : HWACCEL), '-i', src.file, '-an', '-sn', '-vf', "scale=160:-2,select='gt(scene\\,0.3)',showinfo", '-fps_mode', 'passthrough', '-f', 'null', '-'];
+  await runOk(requireTool('ffmpeg'), args, {
     signal,
+    collectStdout: false,
+    onStdout: (c) => {
+      const m = /out_time_us=(\d+)/.exec(c.toString());
+      if (m && dur > 0) onProgress(Math.min(1, Number(m[1]) / 1e6 / dur));
+    },
     onStderrLine: (line) => {
       const m = /showinfo.*pts_time:\s*([0-9.]+)/.exec(line);
       if (m) cuts.push(Number(m[1]));
@@ -59,7 +77,7 @@ async function frameAt(p: Project, a: Asset, t: number | null, dir: string, sign
   if (!fs.existsSync(out)) {
     const args = ['-y', '-v', 'error'];
     if (t !== null) args.push('-ss', t.toFixed(2));
-    args.push('-i', sub(p.id, t === null ? a.proxy ?? a.file : a.file), '-frames:v', '1', '-vf', SCALE, '-q:v', '5', out);
+    args.push('-i', t === null ? sub(p.id, a.proxy ?? a.file) : videoSource(p, a).file, '-frames:v', '1', '-vf', SCALE, '-q:v', '5', out);
     await runOk(requireTool('ffmpeg'), args, { signal });
   }
   return out;
@@ -106,9 +124,15 @@ async function buildCatalog(p: Project, assets: Asset[], signal: AbortSignal, pr
   const perVideo: Shot[][] = [];
   for (let vi = 0; vi < videos.length; vi++) {
     const a = videos[vi]!;
-    progress(0.03 + 0.17 * (vi / Math.max(1, videos.length)), `動画の場面を調べています (${vi + 1}/${videos.length})`);
     const dur = a.durationSec ?? 0;
-    const cuts = dur > 1.5 ? await detectCuts(sub(p.id, a.file), path.join(dir, `${a.id}-${a.hash.slice(0, 12)}-cuts.json`), signal) : [];
+    const label = `動画の場面を調べています (${vi + 1}/${videos.length}本目`;
+    progress(0.03 + 0.17 * (vi / Math.max(1, videos.length)), `${label})`);
+    const cuts =
+      dur > 1.5
+        ? await detectCuts(videoSource(p, a), dur, path.join(dir, `${a.id}-${a.hash.slice(0, 12)}-cuts.json`), signal, (v) =>
+            progress(0.03 + 0.17 * ((vi + v) / Math.max(1, videos.length)), `${label} ${Math.round(v * 100)}%)`),
+          )
+        : [];
     const vid = `V${vi + 1}`;
     labels.set(a.id, vid);
     perVideo.push(shotsFromCuts(dur, cuts).map((s, k) => ({ id: `${vid}-${k + 1}`, assetId: a.id, start: s.start, end: s.end, group: `${vid}-g${s.group}`, image: false })));
@@ -137,13 +161,20 @@ async function buildCatalog(p: Project, assets: Asset[], signal: AbortSignal, pr
     const a = videos[vi]!;
     const vs = perVideo[vi]!;
     shots.push(...vs);
-    const files: string[] = [];
-    for (const s of vs) {
-      if (signal.aborted) throw new CanceledError();
-      const t = Math.round((s.start + Math.min((s.end - s.start) / 2, 1.5)) * 100) / 100;
-      files.push(await frameAt(p, a, t, dir, signal));
-      progress(0.2 + 0.25 * (++done / total), '素材のフレームを準備しています');
-    }
+    // フレームの切り出しは4つずつ同時に行う
+    const files: string[] = new Array(vs.length);
+    let next = 0;
+    const worker = async () => {
+      while (next < vs.length) {
+        const k = next++;
+        if (signal.aborted) throw new CanceledError();
+        const s = vs[k]!;
+        const t = Math.round((s.start + Math.min((s.end - s.start) / 2, 1.5)) * 100) / 100;
+        files[k] = await frameAt(p, a, t, dir, signal);
+        progress(0.2 + 0.25 * (++done / total), `素材のフレームを準備しています (${done}/${total})`);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(4, vs.length) }, worker));
     if (!tiled) vs.forEach((s, k) => pictures.push({ file: files[k]!, shotIds: [s.id] }));
     else {
       for (let k = 0; k < vs.length; k += 4) {
@@ -285,13 +316,14 @@ export async function aiAssign(opt: AssignOptions): Promise<{ assignments: Assig
   }
   content.push({ type: 'text', text: `すべてのカット(1〜${scenes.length})について、使う場面の候補を合う順に挙げてください。` });
 
-  progress(0.45, 'Claude が素材を選んでいます');
+  progress(0.45, `Claude に画像 ${cat.pictures.length} 枚を送っています`);
   let msg: Anthropic.Beta.BetaMessage;
   try {
-    msg = await client.beta.messages.create(
+    // 応答を少しずつ受け取り、進み具合を表示する(長い処理でも止まって見えないように)
+    const stream = client.beta.messages.stream(
       {
         model: AI_MODEL,
-        max_tokens: 16000,
+        max_tokens: 32000,
         system: SYSTEM,
         messages: [{ role: 'user', content }],
         output_config: { effort: 'medium', format: { type: 'json_schema', schema: SCHEMA as unknown as { [key: string]: unknown } } },
@@ -301,6 +333,17 @@ export async function aiAssign(opt: AssignOptions): Promise<{ assignments: Assig
       },
       { signal },
     );
+    // 1カットあたりの応答はおよそ 150 文字
+    const expected = Math.max(500, scenes.length * 150);
+    let chars = 0;
+    for await (const ev of stream) {
+      if (ev.type === 'message_start') progress(0.5, 'Claude が素材を見比べています');
+      else if (ev.type === 'content_block_delta' && ev.delta.type === 'text_delta') {
+        chars += ev.delta.text.length;
+        progress(0.55 + 0.4 * Math.min(1, chars / expected), `Claude が割り当てを書いています (${Math.min(99, Math.round((chars / expected) * 100))}%)`);
+      }
+    }
+    msg = await stream.finalMessage();
   } catch (e) {
     if (signal.aborted) throw new CanceledError();
     throw friendlyError(e, AnthropicCls);

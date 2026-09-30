@@ -39,6 +39,25 @@ const hasFfmpeg = (() => {
   }
 })();
 
+/** 模擬 Claude API の応答(ストリーミングの要求には SSE で返す) */
+function sendMessage(res: http.ServerResponse, req: { model: string; stream?: boolean }, text: string) {
+  const message = { id: 'msg_1', type: 'message', role: 'assistant', model: req.model, content: [] as unknown[], stop_reason: null, stop_sequence: null, usage: { input_tokens: 1234, output_tokens: 0 } };
+  if (!req.stream) {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ...message, content: [{ type: 'text', text }], stop_reason: 'end_turn', usage: { input_tokens: 1234, output_tokens: 56 } }));
+    return;
+  }
+  res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+  const send = (type: string, data: object) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
+  send('message_start', { message });
+  send('content_block_start', { index: 0, content_block: { type: 'text', text: '' } });
+  for (let i = 0; i < text.length; i += 40) send('content_block_delta', { index: 0, delta: { type: 'text_delta', text: text.slice(i, i + 40) } });
+  send('content_block_stop', { index: 0 });
+  send('message_delta', { delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 56 } });
+  send('message_stop', {});
+  res.end();
+}
+
 test('Claude API へ素材のフレームとカットの文章を送り、提案を検証して受け取る(模擬サーバー)', { skip: !hasFfmpeg }, async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tdm-ai-'));
   process.env.TDM_DATA_DIR = dataDir;
@@ -66,8 +85,7 @@ test('Claude API へ素材のフレームとカットの文章を送り、提案
           { scene: 3, choices: [{ shot: 'nope', reason: '存在しない場面' }] },
         ],
       };
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ id: 'msg_1', type: 'message', role: 'assistant', model: j.model, content: [{ type: 'text', text: JSON.stringify(out) }], stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 1234, output_tokens: 56 } }));
+      sendMessage(res, j, JSON.stringify(out));
     });
   });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));

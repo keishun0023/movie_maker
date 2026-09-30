@@ -151,27 +151,37 @@ export async function makePreviewFiles(projectId: string, asset: Asset, signal?:
     await run(ffmpeg, ['-y', '-v', 'error', '-ss', t.toFixed(3), '-i', src, '-frames:v', '1', '-vf', 'scale=320:-2', '-q:v', '4', thumbPath(projectId, asset.id)], opt);
     const tmp = proxyPath(projectId, asset.id) + '.part.mp4';
     const dur = asset.durationSec ?? 0;
-    await runOk(
-      ffmpeg,
-      [
-        '-y', '-v', 'error', '-progress', 'pipe:1', '-nostats',
-        '-i', src,
-        '-map', '0:v:0', '-map', '0:a:0?',
-        '-vf', "fps=30,scale=w='min(1280,iw)':h='min(1280,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,format=yuv420p",
-        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '28',
-        '-c:a', 'aac', '-b:a', '128k', '-ac', '2',
-        '-movflags', '+faststart',
-        tmp,
-      ],
-      {
-        ...opt,
-        onStdout: (c) => {
-          const m = /out_time_us=(\d+)/.exec(c.toString());
-          if (m && dur > 0 && onProgress) onProgress(Math.min(1, Number(m[1]) / 1e6 / dur));
+    // Mac ではハードウェアの読み込み・書き出しを使う(大きな動画でも速い)。失敗したら通常の方法でやり直す
+    const mac = process.platform === 'darwin';
+    const encode = (hw: boolean) =>
+      runOk(
+        ffmpeg,
+        [
+          '-y', '-v', 'error', '-progress', 'pipe:1', '-nostats',
+          ...(hw ? ['-hwaccel', 'videotoolbox'] : []),
+          '-i', src,
+          '-map', '0:v:0', '-map', '0:a:0?',
+          '-vf', "fps=30,scale=w='min(1280,iw)':h='min(1280,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,format=yuv420p",
+          ...(hw ? ['-c:v', 'h264_videotoolbox', '-b:v', '3M'] : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '28']),
+          '-c:a', 'aac', '-b:a', '128k', '-ac', '2',
+          '-movflags', '+faststart',
+          tmp,
+        ],
+        {
+          ...opt,
+          onStdout: (c) => {
+            const m = /out_time_us=(\d+)/.exec(c.toString());
+            if (m && dur > 0 && onProgress) onProgress(Math.min(1, Number(m[1]) / 1e6 / dur));
+          },
+          collectStdout: false,
         },
-        collectStdout: false,
-      },
-    );
+      );
+    try {
+      await encode(mac);
+    } catch (e) {
+      if (!mac || signal?.aborted) throw e;
+      await encode(false);
+    }
     await fsp.rename(tmp, proxyPath(projectId, asset.id));
   } else if (asset.kind === 'image') {
     await runOk(ffmpeg, ['-y', '-v', 'error', '-i', src, '-frames:v', '1', '-vf', 'scale=320:-2', '-q:v', '4', thumbPath(projectId, asset.id)], opt);
