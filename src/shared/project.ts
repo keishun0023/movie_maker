@@ -60,7 +60,9 @@ export function migrateProject(p: Partial<Project> & { id: string; name: string 
   merged.asr = { ...base.asr, ...(p.asr ?? {}) };
   // 以前の初期値(提供終了)は自動選択に切り替える
   if (merged.asr.geminiModel === 'gemini-2.5-flash') merged.asr.geminiModel = 'auto';
-  merged.sceneLen = { ...base.sceneLen, ...(p.sceneLen ?? {}) };
+  // 以前のバージョンで作ったプロジェクトは、当時の作り方(均等なカット割り・2行までのテロップ)のまま表示する
+  merged.sceneLen = p.sceneLen ? { rhythm: 'even', ...p.sceneLen } : { ...base.sceneLen };
+  merged.captionLen = p.captionLen ?? (p.sceneLen ? 'normal' : base.captionLen);
   merged.aiAssign = { ...base.aiAssign, ...(p.aiAssign ?? {}) };
   merged.mix = { ...base.mix, ...(p.mix ?? {}) };
   merged.schemaVersion = SCHEMA_VERSION;
@@ -155,6 +157,8 @@ export function snapCaptionsToSpeech(caps: Caption[], a: AnalysisData, sensitivi
 export interface AutoEditOptions {
   /** 手動修正したテロップ・シーンを保持する */
   keepManual: boolean;
+  /** 手で動かしたカットの境界も作り直す(カット割りの設定を明示的に変えたとき) */
+  recut?: boolean;
 }
 
 /** 認識結果と解析データから、カット・テロップ・シーンを自動生成する */
@@ -171,7 +175,7 @@ export function autoEdit(p: Project, a: AnalysisData, opt: AutoEditOptions = { k
   let caps = snapCaptionsToSpeech(buildCaptions(tokens, tl, segmentOptionsFor(next)), a, next.cut.params.sensitivityDb);
   if (opt.keepManual) caps = mergeCaptions(p.captions, caps);
   // シーン境界を手で直している場合は境界を保持する。素材の割り当ては常に引き継ぐ
-  const manualScenes = opt.keepManual && p.scenes.length > 1 && p.scenes.some((s) => s.boundaryEdited);
+  const manualScenes = opt.keepManual && !opt.recut && p.scenes.length > 1 && p.scenes.some((s) => s.boundaryEdited);
   const scenes = manualScenes
     ? normalizeScenes(p.scenes, dur)
     : carryOverScenes(

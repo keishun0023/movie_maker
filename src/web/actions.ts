@@ -564,3 +564,16 @@ export function applyAutoMotions() {
 export function clearMotions() {
   store.commit((p) => ({ ...p, scenes: p.scenes.map((s) => (s.bg ? { ...s, bg: { ...s.bg, kenBurns: false, motion: { type: 'none', strength: 1 } } } : s)) }));
 }
+
+/**
+ * カット割り・テロップの長さの設定を変えて、その場で作り直す。
+ * 文字起こし済みならテロップから作り直し、未実施ならカットの長さだけ合わせる。素材の割り当ては引き継ぐ。
+ */
+export function reapplyLayout(change: (p: Project) => Project) {
+  const a = store.state.analysis;
+  store.commit((p) => {
+    const next = change(p);
+    if (a && next.transcript) return autoEdit(next, a, { keepManual: true, recut: true });
+    return splitScenesToCutLength(next);
+  });
+}

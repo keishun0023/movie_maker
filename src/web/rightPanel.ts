@@ -19,6 +19,7 @@ import {
   mergeCaptionWithNext,
   mergeScene,
   rebuildCaptions,
+  reapplyLayout,
   runAiAssign,
   applyAutoMotions,
   clearMotions,
@@ -408,7 +409,8 @@ function sceneLenSection(p: Project): HTMLElement {
   const perCap = p.sceneLen.rhythm === 'caption';
   const cur = perCap || p.sceneLen.rhythm === 'mix' ? undefined : presets.find(([, a, b]) => a === p.sceneLen.minSec && b === p.sceneLen.maxSec);
   const intro = (p.sceneLen.introSec ?? 0) > 0;
-  const setLen = (patch: Partial<Project['sceneLen']>) => store.commit((pp) => splitScenesToCutLength({ ...pp, sceneLen: { ...pp.sceneLen, ...patch } }));
+  // 押した時点でカット割り・テロップを作り直す(素材の割り当ては引き継ぐ)
+  const setLen = (patch: Partial<Project['sceneLen']>) => reapplyLayout((pp) => ({ ...pp, sceneLen: { ...pp.sceneLen, ...patch } }));
   const short = p.captionLen === 'short';
   return section(
     'カット割り・テロップの長さ',
@@ -429,13 +431,12 @@ function sceneLenSection(p: Project): HTMLElement {
       h(
         'div',
         { class: 'seg-buttons' },
-        h('button', { type: 'button', class: !short ? 'on' : '', onclick: () => store.commit((pp) => ({ ...pp, captionLen: 'normal' })) }, '標準(2行まで)'),
-        h('button', { type: 'button', class: short ? 'on' : '', onclick: () => store.commit((pp) => ({ ...pp, captionLen: 'short' })) }, '短く区切る(1行・11文字まで)'),
+        h('button', { type: 'button', class: !short ? 'on' : '', onclick: () => reapplyLayout((pp) => ({ ...pp, captionLen: 'normal' })) }, '標準(2行まで)'),
+        h('button', { type: 'button', class: short ? 'on' : '', onclick: () => reapplyLayout((pp) => ({ ...pp, captionLen: 'short' })) }, '短く区切る(1行・11文字まで)'),
       ),
       '「短く区切る」は「色黒女子は / 全員これ使え」「白玉点滴とか / 美容医療に手出す前に」のように、話の区切りごとにテロップを分けます',
     ),
-    h('p', { class: 'hint' }, 'カットの長さは、長すぎるカットをその場で語の切れ目で分けます。テロップの長さと、短いカットをまとめ直すには「テロップ・シーンを作り直す」(または自動編集)を押してください。'),
-    p.transcript ? button('この設定でテロップ・シーンを作り直す(手動修正は保持)', () => rebuildCaptions(true)) : null,
+    h('p', { class: 'hint' }, '押すとその場でテロップとカットを作り直します(手で直したテロップの文章と、カットへの素材の割り当ては引き継ぎます)。'),
   );
 }
 
