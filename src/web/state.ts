@@ -53,6 +53,8 @@ export class Store {
   private saveTimer: number | null = null;
   private saving: Promise<void> | null = null;
   skipPanel: string | null = null;
+  /** 変更のたびに整合性をそろえる処理(例: 速さの変更で対応表を作り直す) */
+  normalize: ((p: Project) => Project) | null = null;
 
   init(s: AppState) {
     this.state = s;
@@ -75,7 +77,8 @@ export class Store {
   /** プロジェクトを変更する(履歴・自動保存つき) */
   commit(fn: (p: Project) => Project, opt: CommitOptions = {}) {
     const before = this.state.project;
-    const after = fn(before);
+    const changed = fn(before);
+    const after = changed === before || !this.normalize ? changed : this.normalize(changed);
     if (after === before) return;
     if (!opt.noHistory) {
       const now = Date.now();

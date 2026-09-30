@@ -5,6 +5,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import type { AnalysisData, Asset, AssetKind, AudioStreamInfo, Timeline } from '../shared/types.js';
 import { computeAnalysis, FRAME_SAMPLES } from '../shared/silence.js';
+import { timeStretch } from '../shared/stretch.js';
 import { SR } from '../shared/types.js';
 import { requireTool, run, runOk } from './proc.js';
 import { atomicWrite, sub } from './store.js';
@@ -305,33 +306,62 @@ export async function loadAnalysis(projectId: string, key: string): Promise<Anal
 
 /**
  * 対応表に従って編集後のナレーションを作る。
- * 接合点には短いフェードをかける(フェードは区間の内側だけで行うので尺は変わらない)。
+ * - カット点には短いフェードをかける(区間の内側だけで行うので尺は変わらない)
+ * - 被せ(xfadeMs)がある場合は、カットで削った前後の音声を少しだけ使ってクロスフェードで重ねる
+ * - 速さを変えた区間は音程を保ったまま伸縮する
  * padToSamples を指定すると末尾を無音で延ばす。
  */
 export function renderEdited(source: Pcm16, tl: Timeline, gainDb = 0, padToSamples?: number): Pcm16 {
   const ch = source.channels;
   const total = Math.max(tl.outSamples, padToSamples ?? 0);
-  const out = new Int16Array(total * ch);
-  const fade = Math.round((tl.fadeMs / 1000) * source.sampleRate);
+  const acc = new Float32Array(total * ch);
+  const sr = source.sampleRate;
+  const fade = Math.round((tl.fadeMs / 1000) * sr);
+  const xf = Math.round(((tl.xfadeMs ?? 0) / 1000) * sr);
   const gain = Math.pow(10, gainDb / 20);
   const srcFrames = source.data.length / ch;
-  for (const seg of tl.segments) {
-    const len = seg.srcEnd - seg.srcStart;
+  const segs = tl.segments;
+  const outLen = (i: number) => segs[i]!.outEnd - segs[i]!.outStart;
+  // 区間 i と i+1 の境目で重ねる長さ(出力サンプル、片側)
+  const half: number[] = segs.map((seg, i) => {
+    const next = segs[i + 1];
+    if (!xf || !next || next.srcStart <= seg.srcEnd) return 0;
+    const gapOut = Math.floor((next.srcStart - seg.srcEnd) / 2 / Math.max(seg.speed ?? 1, next.speed ?? 1));
+    return Math.max(0, Math.min(Math.floor(xf / 2), gapOut, Math.floor(outLen(i) / 2), Math.floor(outLen(i + 1) / 2)));
+  });
+  segs.forEach((seg, i) => {
+    const prev = segs[i - 1];
+    const next = segs[i + 1];
+    const speed = seg.speed ?? 1;
+    const cutBefore = prev ? prev.srcEnd < seg.srcStart : seg.srcStart > 0;
+    const cutAfter = next ? seg.srcEnd < next.srcStart : seg.srcEnd < tl.srcSamples;
+    const hL = i > 0 ? half[i - 1]! : 0;
+    const hR = half[i]!;
+    // 重ねる分だけ前後に広げて取り出す
+    const a = Math.max(0, Math.min(srcFrames, seg.srcStart - Math.round(hL * speed)));
+    const b = Math.max(a, Math.min(srcFrames, seg.srcEnd + Math.round(hR * speed)));
+    const want = outLen(i) + hL + hR;
+    const raw = source.data.subarray(a * ch, b * ch);
+    const piece = speed !== 1 || raw.length / ch !== want ? (speed !== 1 ? timeStretch(raw, ch, want) : raw) : raw;
+    const len = Math.min(want, piece.length / ch);
+    const o0 = seg.outStart - hL;
     const f = Math.min(fade, Math.floor(len / 2));
-    const fadeIn = seg.srcStart > 0 && f > 0;
-    const fadeOut = seg.srcEnd < tl.srcSamples && f > 0;
-    for (let i = 0; i < len; i++) {
-      const si = seg.srcStart + i;
-      if (si >= srcFrames) break;
+    for (let k = 0; k < len; k++) {
+      const oi = o0 + k;
+      if (oi < 0 || oi >= total) continue;
       let g = gain;
-      if (fadeIn && i < f) g *= i / f;
-      if (fadeOut && i >= len - f) g *= (len - 1 - i) / f;
-      const oi = seg.outStart + i;
-      for (let c = 0; c < ch; c++) {
-        const v = source.data[si * ch + c]! * g;
-        out[oi * ch + c] = v > 32767 ? 32767 : v < -32768 ? -32768 : Math.round(v);
-      }
+      if (hL > 0 && k < 2 * hL) g *= Math.sin(((k + 0.5) / (2 * hL)) * (Math.PI / 2));
+      else if (hL === 0 && cutBefore && f > 0 && k < f) g *= k / f;
+      const fromEnd = len - 1 - k;
+      if (hR > 0 && fromEnd < 2 * hR) g *= Math.sin(((fromEnd + 0.5) / (2 * hR)) * (Math.PI / 2));
+      else if (hR === 0 && cutAfter && f > 0 && fromEnd < f) g *= fromEnd / f;
+      for (let c = 0; c < ch; c++) acc[oi * ch + c]! += piece[k * ch + c]! * g;
     }
+  });
+  const out = new Int16Array(total * ch);
+  for (let i = 0; i < out.length; i++) {
+    const v = acc[i]!;
+    out[i] = v > 32767 ? 32767 : v < -32768 ? -32768 : Math.round(v);
   }
   return { sampleRate: source.sampleRate, channels: ch, data: out };
 }

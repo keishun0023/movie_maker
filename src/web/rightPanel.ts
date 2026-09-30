@@ -153,6 +153,7 @@ const PARAM_DEFS: [keyof CutParams, string, number, number, number, string][] = 
   ['headMs', '冒頭に残す無音', 0, 1000, 10, 'ms'],
   ['tailMs', '末尾に残す無音', 0, 2000, 10, 'ms'],
   ['sensitivityDb', '無音判定の感度(+で大きめの音も無音扱い)', -15, 15, 1, 'dB'],
+  ['overlapMs', '被せ(語尾・語頭に食い込んで重ねる量)', 0, 200, 5, 'ms'],
   ['fadeMs', '接合点のフェード', 0, 30, 1, 'ms'],
 ];
 
@@ -163,7 +164,7 @@ function autoView(player: Player): HTMLElement {
   const presetRow = h(
     'div',
     { class: 'seg-buttons' },
-    (['jumpcut', 'tempo', 'natural', 'custom'] as CutPresetId[]).map((id) =>
+    (['tsuratsura', 'jumpcut', 'tempo', 'natural', 'custom'] as CutPresetId[]).map((id) =>
       h(
         'button',
         {
@@ -211,7 +212,7 @@ function autoView(player: Player): HTMLElement {
     : h('p', { class: 'hint' }, 'タイムラインを「元音声(カット確認)」にすると、無音候補をクリックして「この間は残す」を切り替えたり、カット前後を聞き比べたりできます。');
   const cutSection = section(
     '無音カット',
-    h('p', { class: 'hint' }, '「即カット」は無音が来たらすぐ切ります(語頭・語尾を守る数十msだけ残します)。再生速度は常に1.0倍で、テンポは間の長さだけで調整します。'),
+    h('p', { class: 'hint' }, '「即カット」は無音が来たらすぐ切ります(語頭・語尾を守る数十msだけ残します)。「つらつら(被せ)」はさらに語尾の余韻や語頭に少し食い込んで、前後をクロスフェードで重ねてつなぎます。話す速さはシーンごとに「確認して修正」で変えられます。'),
     presetRow,
     params,
     summary,
@@ -300,7 +301,7 @@ function geminiBox(p: Project): HTMLElement {
       store.emit('settings');
     }).catch(() => (geminiState.loading = false));
   }
-  const keyIn = h('input', { type: 'password', placeholder: 'AIza… (Google AI Studio で発行)', autocomplete: 'off' });
+  const keyIn = h('input', { type: 'password', placeholder: 'Google AI Studio で発行したキーを貼り付け', autocomplete: 'off' });
   const saveKey = async (k: string | null) => {
     try {
       const r = await api.setGeminiKey(k);
@@ -445,6 +446,7 @@ function sceneInspector(s: Scene, player: Player): HTMLElement {
       button('前と結合', () => mergeScene(s.id, -1), { disabled: idx === 0 }),
       button('次と結合', () => mergeScene(s.id, 1), { disabled: idx === p.scenes.length - 1 }),
     ),
+    speedSection(s),
     section(
       '背景',
       field(
@@ -482,6 +484,31 @@ function sceneInspector(s: Scene, player: Player): HTMLElement {
           )
         : null,
     ),
+  );
+}
+
+/** シーンの話す速さ(音程は変えずに速さだけ変える) */
+function speedSection(s: Scene): HTMLElement {
+  const speed = s.speed ?? 1;
+  const setSpeed = (v: number, all = false) => {
+    const sp = Math.round(Math.max(0.5, Math.min(2, v)) * 100) / 100;
+    store.commit((p) => ({ ...p, scenes: p.scenes.map((sc) => (all || sc.id === s.id ? { ...sc, speed: sp === 1 ? undefined : sp } : sc)) }));
+  };
+  const label = h('span', { class: 'slider-value' }, `${speed.toFixed(2)}倍`);
+  const range = h('input', { type: 'range', min: 0.5, max: 2, step: 0.05, value: String(speed) });
+  range.addEventListener('input', () => (label.textContent = `${Number(range.value).toFixed(2)}倍`));
+  // 音声の作り直しが重いので、つまみを離したときに確定する
+  range.addEventListener('change', () => setSpeed(Number(range.value)));
+  return section(
+    '話す速さ',
+    h('div', { class: 'slider' }, range, label),
+    h(
+      'div',
+      { class: 'seg-buttons' },
+      [0.8, 1, 1.1, 1.2, 1.5].map((v) => h('button', { type: 'button', class: Math.abs(speed - v) < 0.001 ? 'on' : '', onclick: () => setSpeed(v) }, `${v}倍`)),
+    ),
+    button('全シーンをこの速さにする', () => setSpeed(speed, true), { class: 'small' }),
+    h('p', { class: 'hint' }, '声の高さは変えずに速さだけ変えます。テロップの表示時間や、元動画と同期した背景の映像も一緒に変わります。'),
   );
 }
 

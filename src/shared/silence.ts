@@ -4,18 +4,23 @@ import { SR, type AnalysisData, type CutParams, type CutPresetId, type SilenceCa
 import { msToSamples, normalizeRanges, type Range } from './timemap.js';
 
 export const CUT_PRESETS: Record<Exclude<CutPresetId, 'custom'>, { label: string; params: CutParams }> = {
+  // 無音をなくし、語尾・語頭に少し食い込んでクロスフェードで重ねる(つらつら喋る感じ)
+  tsuratsura: {
+    label: 'つらつら(被せ)',
+    params: { minSilenceMs: 50, keepMs: 0, padBeforeMs: 15, padAfterMs: 15, headMs: 0, tailMs: 0, sensitivityDb: 0, fadeMs: 4, overlapMs: 80 },
+  },
   // 無音が来たら即カット。語頭・語尾を傷つけない最小限の余白だけ残す
   jumpcut: {
     label: '即カット',
-    params: { minSilenceMs: 100, keepMs: 0, padBeforeMs: 30, padAfterMs: 40, headMs: 0, tailMs: 0, sensitivityDb: 0, fadeMs: 4 },
+    params: { minSilenceMs: 100, keepMs: 0, padBeforeMs: 30, padAfterMs: 40, headMs: 0, tailMs: 0, sensitivityDb: 0, fadeMs: 4, overlapMs: 0 },
   },
   tempo: {
     label: 'テンポよく',
-    params: { minSilenceMs: 250, keepMs: 100, padBeforeMs: 40, padAfterMs: 60, headMs: 50, tailMs: 100, sensitivityDb: 0, fadeMs: 5 },
+    params: { minSilenceMs: 250, keepMs: 100, padBeforeMs: 40, padAfterMs: 60, headMs: 50, tailMs: 100, sensitivityDb: 0, fadeMs: 5, overlapMs: 0 },
   },
   natural: {
     label: '自然',
-    params: { minSilenceMs: 350, keepMs: 180, padBeforeMs: 60, padAfterMs: 90, headMs: 150, tailMs: 250, sensitivityDb: 0, fadeMs: 6 },
+    params: { minSilenceMs: 350, keepMs: 180, padBeforeMs: 60, padAfterMs: 90, headMs: 150, tailMs: 250, sensitivityDb: 0, fadeMs: 6, overlapMs: 0 },
   },
 };
 
@@ -198,6 +203,15 @@ export function decideCuts(
       continue;
     }
     const len = c.end - c.start;
+    const ov = msToSamples(params.overlapMs ?? 0);
+    if (ov > 0) {
+      // 被せ: 保護余白を残した位置からさらに前後の発話へ ov/2 ずつ食い込む
+      if (len < minLen) continue;
+      const s = c.start + padA - Math.floor(ov / 2);
+      const e = c.end - padB + (ov - Math.floor(ov / 2));
+      if (e > s) out.push({ candidateId: c.id, start: Math.max(0, s), end: Math.min(durationSamples, e), reason: 'gap' });
+      continue;
+    }
     if (len < minLen || len <= keep) continue;
     const extra = keep - padA - padB;
     const s = c.start + padA + Math.floor(extra / 2);

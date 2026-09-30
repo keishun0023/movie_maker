@@ -115,7 +115,9 @@ async function renderSceneSegment(
       pieces.forEach((pc, k) => {
         const s = offset + pc.srcStart / SR;
         const e = offset + pc.srcEnd / SR;
-        filters.push(`[${inputs}:v]trim=start=${s.toFixed(6)}:end=${e.toFixed(6)},setpts=PTS-STARTPTS[pc${k}]`);
+        // 話す速さを変えたシーンは映像も同じ速さにする(口の動きと音声をそろえる)
+        const pts = pc.speed && pc.speed !== 1 ? `(PTS-STARTPTS)/${pc.speed}` : 'PTS-STARTPTS';
+        filters.push(`[${inputs}:v]trim=start=${s.toFixed(6)}:end=${e.toFixed(6)},setpts=${pts}[pc${k}]`);
         labels.push(`[pc${k}]`);
       });
       if (labels.length === 0) {

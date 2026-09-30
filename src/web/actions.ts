@@ -1,6 +1,6 @@
 // 画面から呼ぶ操作(取り込み・自動編集・シーン/テロップ編集・書き出し)。
 import { SR, type Asset, type BgPlacement, type Caption, type JobInfo, type Project, type Scene, type Transcript } from '../shared/types.js';
-import { autoEdit, markCaptionReview, normalizeScenes, recomputeCut, timelineOf } from '../shared/project.js';
+import { autoEdit, ensureTimelineSpeeds, markCaptionReview, normalizeScenes, recomputeCut, timelineOf } from '../shared/project.js';
 import { captionOutputTimings, newId, sceneOutputRanges } from '../shared/segment.js';
 import { drawCaption, effectiveStyle } from '../shared/captionRender.js';
 import { displayFromRaw } from '../shared/jatext.js';
@@ -9,6 +9,9 @@ import { api } from './api.js';
 import { toast } from './dom.js';
 import { ensureFont, fontError, fontInfo, fontState, renderFontFor } from './fonts.js';
 import { store } from './state.js';
+
+// シーンの速さや境界を変えたら、時間対応表を自動で作り直す
+store.normalize = (p) => (store.state.analysis ? ensureTimelineSpeeds(p, store.state.analysis) : p);
 
 // ---- ジョブの監視 ----
 

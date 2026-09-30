@@ -8,10 +8,11 @@ import {
   type CutPresetId,
   type Project,
   type Scene,
+  type SpeedRange,
   type Timeline,
 } from './types.js';
 import { CUT_PRESETS, DEFAULT_CUT_PRESET, decideCuts, detectSilences, flagTokens, levelStats, protectBySpeech, removeRangesFromCuts } from './silence.js';
-import { buildTimeline, identityTimeline, msToSamples, srcToOut } from './timemap.js';
+import { buildTimeline, clampSpeed, identityTimeline, msToSamples, speedKeyOf, srcToOut } from './timemap.js';
 import { buildCaptions, buildScenes, carryOverScenes, DEFAULT_SEGMENT_OPTIONS, mergeCaptions, type SegmentOptions } from './segment.js';
 import { charsPerLineFor, DEFAULT_STYLE } from './captionRender.js';
 
@@ -74,8 +75,22 @@ export function recomputeCut(p: Project, a: AnalysisData): Project {
   let cands = detectSilences(a, p.cut.params.sensitivityDb, 50);
   if (p.transcript) cands = protectBySpeech(cands, p.transcript.tokens, a, p.cut.params.sensitivityDb);
   const cuts = decideCuts(cands, p.cut.params, dur, p.cut.keepRanges);
-  const timeline = buildTimeline(dur, removeRangesFromCuts(cuts, dur), p.cut.params.fadeMs);
+  const timeline = buildTimeline(dur, removeRangesFromCuts(cuts, dur), p.cut.params.fadeMs, speedRangesOf(p.scenes), p.cut.params.overlapMs ?? 0);
   return { ...p, silenceCandidates: cands, timeline };
+}
+
+/** シーンの「話す速さ」から、元音声の範囲ごとの速さを作る */
+export function speedRangesOf(scenes: Scene[]): SpeedRange[] {
+  return scenes.filter((s) => clampSpeed(s.speed) !== 1).map((s) => ({ start: s.srcStart, end: s.srcEnd, speed: clampSpeed(s.speed) }));
+}
+
+/** シーンの速さ・境界が対応表と食い違っていれば対応表を作り直す */
+export function ensureTimelineSpeeds(p: Project, a: AnalysisData): Project {
+  if (!p.narration || !p.timeline) return p;
+  const want = speedKeyOf(speedRangesOf(p.scenes));
+  if ((p.timeline.speedKey ?? '') === want) return p;
+  const next = recomputeCut(p, a);
+  return { ...next, captions: markCaptionReview(next.captions, next.timeline) };
 }
 
 export function timelineOf(p: Project): Timeline | null {

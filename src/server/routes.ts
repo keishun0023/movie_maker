@@ -258,8 +258,9 @@ router.get('/api/settings', (_req, res) => sendJson(res, 200, { geminiKeySource:
 
 router.put('/api/settings/gemini-key', async (req, res) => {
   const body = await readJson<{ key?: string | null }>(req);
-  const k = (body.key ?? '').trim();
-  if (k && !/^[A-Za-z0-9_\-]{20,200}$/.test(k)) throw new HttpError(400, 'APIキーの形式が正しくありません');
+  // キーの形式は変わることがある(AIza… / AQ.… など)ので、ヘッダーに使える文字かだけを確認する
+  const k = (body.key ?? '').trim().replace(/^["'“”]+|["'“”]+$/g, '');
+  if (k && !/^[\x21-\x7e]{10,1000}$/.test(k)) throw new HttpError(400, 'APIキーに使えない文字(空白や全角文字など)が含まれています。コピーし直して貼り付けてください');
   await setGeminiKey(k || null);
   sendJson(res, 200, { geminiKeySource: geminiKeySource() });
 });

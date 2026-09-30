@@ -90,7 +90,7 @@ export interface Transcript {
   notes: string[];
 }
 
-export type CutPresetId = 'jumpcut' | 'tempo' | 'natural' | 'custom';
+export type CutPresetId = 'tsuratsura' | 'jumpcut' | 'tempo' | 'natural' | 'custom';
 
 export interface CutParams {
   /** これより短い無音は触らない */
@@ -109,6 +109,11 @@ export interface CutParams {
   sensitivityDb: number;
   /** 接合点のフェード */
   fadeMs: number;
+  /**
+   * 被せ: カットの両側の発話(語尾の余韻・語頭)にこの長さだけ食い込んで詰め、
+   * 詰めた部分はクロスフェードで重ねてつなぐ。0 なら発話は削らない
+   */
+  overlapMs: number;
 }
 
 export interface CutSettings {
@@ -131,6 +136,15 @@ export interface KeepSegment {
   srcEnd: number;
   outStart: number;
   outEnd: number;
+  /** 話す速さ(1 = 等速)。出力の長さ = 元の長さ / speed */
+  speed?: number;
+}
+
+/** 元音声の範囲ごとの話す速さ(シーンの設定から作る) */
+export interface SpeedRange {
+  start: number;
+  end: number;
+  speed: number;
 }
 
 export interface Timeline {
@@ -138,7 +152,11 @@ export interface Timeline {
   outSamples: number;
   srcSamples: number;
   fadeMs: number;
+  /** カット点で前後の音声を重ねるクロスフェードの長さ(被せ) */
+  xfadeMs?: number;
   hash: string;
+  /** 対応表を作ったときの速さ設定(変更検出用) */
+  speedKey?: string;
 }
 
 export interface CaptionStyle {
@@ -218,6 +236,8 @@ export interface Scene {
   bg: BgPlacement | null;
   inset: InsetPlacement | null;
   boundaryEdited?: boolean;
+  /** このシーンの話す速さ(0.5〜2.0、初期値 1)。音程は変えずに速さだけ変える */
+  speed?: number;
 }
 
 export interface BgmSettings {

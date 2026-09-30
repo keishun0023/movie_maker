@@ -267,7 +267,7 @@ export class Player {
 
   private layerKey(scene: Scene, p: Project): string {
     const bg = scene.bg;
-    return JSON.stringify([scene.id, bg, scene.inset, p.export.width, p.export.height]);
+    return JSON.stringify([scene.id, bg, scene.inset, scene.speed ?? 1, p.export.width, p.export.height]);
   }
 
   /** 指定時刻の画面を描く */
@@ -352,6 +352,9 @@ export class Player {
         want = bg.startSec + (t - sr.outStart) / SR;
         if (dur > 0 && want >= dur) want = bg.shortMode === 'loop' ? want % dur : Math.max(0, dur - 0.04);
       }
+      // 元動画と同期する場合は、シーンの話す速さで映像も再生する
+      const rate = bg.mode === 'synced' ? layer.scene.speed ?? 1 : 1;
+      if (Math.abs(v.playbackRate - rate) > 0.001) v.playbackRate = rate;
       const playing = this.isPlaying() && this.mode === 'edited';
       const frozen = bg.mode !== 'synced' && bg.shortMode === 'freeze' && dur > 0 && want >= dur - 0.05;
       if (playing && !frozen) {
