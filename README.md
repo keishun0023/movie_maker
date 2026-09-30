@@ -57,7 +57,7 @@ cd このフォルダ
 1. https://aistudio.google.com/apikey で APIキーを発行
 2. 「2 自動編集」→「文字起こし」で **Gemini API(クラウド)** を選び、APIキーを入れて「保存」
    - キーは `~/TateDougaMaker/secrets.json`(本人のみ読み書き可)に保存し、project.json やログには入れません。環境変数 `GEMINI_API_KEY` でも指定できます
-3. 「モデル一覧を取得」でモデルを選ぶ(初期値 `gemini-2.5-flash`。より高精度にしたい場合は pro 系)
+3. モデルは初期値「自動(最新の flash)」のままで OK(実行時に Google のモデル一覧から最新の安定版 flash を選びます)。より高精度にしたい場合は「モデル一覧を取得」から pro 系を選ぶ
 4. 「このプロジェクトの音声を Google Gemini API に送信することに同意する」にチェックして「自動編集を実行」
 
 仕組み: Gemini は語ごとの時刻を返さないため、音声を無音で区切った「音声片」(フレーズ単位)ごとに送り、

@@ -24,7 +24,7 @@ function friendlyError(status: number, body: string): Error {
   }
   if (status === 400 && /API key/i.test(msg)) return new Error('Gemini の APIキーが正しくありません。設定し直してください。');
   if (status === 401 || status === 403) return new Error(`Gemini API の利用が許可されていません(${status})。APIキーと、Google AI Studio 側の設定を確認してください。\n${msg}`);
-  if (status === 404) return new Error(`指定した Gemini モデルが見つかりません。「モデル一覧を取得」から選び直してください。\n${msg}`);
+  if (status === 404) return new Error(`指定した Gemini モデルが使えません(提供終了など)。モデルを「自動(最新の flash)」にするか、「モデル一覧を取得」から選び直してください。\n${msg}`);
   if (status === 429) return new Error(`Gemini API の利用上限に達しました(429)。少し待ってから再試行してください。\n${msg}`);
   return new Error(`Gemini API がエラーを返しました(${status})。\n${msg}`);
 }
@@ -38,6 +38,35 @@ export async function listGeminiModels(apiKey: string): Promise<string[]> {
     .filter((m) => m.supportedGenerationMethods?.includes('generateContent') && /gemini/i.test(m.name))
     .map((m) => m.name.replace(/^models\//, ''))
     .sort();
+}
+
+/**
+ * モデル一覧から最新の flash モデルを選ぶ(モデルは入れ替わるので名前を決め打ちしない)。
+ * 安定版(-preview などの付かないもの)を優先し、lite は避ける。
+ */
+export function pickLatestFlash(models: string[]): string | null {
+  const scored = models
+    .map((m) => {
+      const r = /^gemini-(\d+)(?:\.(\d+))?-flash(-lite)?(?:-(.+))?$/.exec(m);
+      if (!r) return null;
+      const version = Number(r[1]) * 100 + Number(r[2] ?? 0);
+      const stable = !r[4];
+      const lite = !!r[3];
+      // 安定版 > 新しいバージョン > lite でない の順に優先(preview は提供終了が早いことがある)
+      return { m, score: (stable ? 1_000_000 : 0) + version * 10 + (lite ? 0 : 2) };
+    })
+    .filter((x): x is { m: string; score: number } => !!x)
+    .sort((a, b) => b.score - a.score);
+  return scored[0]?.m ?? null;
+}
+
+/** 'auto' なら API のモデル一覧から最新の flash を選ぶ */
+export async function resolveGeminiModel(model: string, apiKey: string): Promise<string> {
+  if (model !== 'auto') return assertGeminiModel(model);
+  const list = await listGeminiModels(apiKey);
+  const picked = pickLatestFlash(list);
+  if (!picked) throw new Error('使える Gemini の flash モデルが見つかりませんでした。「モデル一覧を取得」から選んでください。');
+  return picked;
 }
 
 export interface GeminiRequest {

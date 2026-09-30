@@ -86,3 +86,14 @@ test('Gemini API へ音声片をまとめて送り、音声片ごとの結果を
   assert.deepEqual(r.texts, ['こんにちは。', '今日はいい天気です。', '']);
   assert.deepEqual(r.missing, [2]);
 });
+
+test('モデル「自動」は一覧から最新の安定版 flash を選ぶ(lite・preview・pro は避ける)', async () => {
+  const { pickLatestFlash } = await import('../server/asr/gemini.js');
+  const list = ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-3.8-flash', 'gemini-3.8-flash-lite', 'gemini-3.9-flash-preview-09-2026', 'gemini-3.8-pro', 'text-embedding-004'];
+  assert.equal(pickLatestFlash(list), 'gemini-3.8-flash');
+  // 安定版がなければ preview でも使う
+  assert.equal(pickLatestFlash(['gemini-3.9-flash-preview-09-2026', 'gemini-3.8-pro']), 'gemini-3.9-flash-preview-09-2026');
+  // 同じバージョンなら安定版を優先
+  assert.equal(pickLatestFlash(['gemini-3.8-flash-preview-01', 'gemini-3.8-flash', 'gemini-3.8-flash-lite']), 'gemini-3.8-flash');
+  assert.equal(pickLatestFlash(['gemini-3.8-pro']), null);
+});

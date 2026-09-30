@@ -59,7 +59,21 @@ function jobsBox(types: string[]): HTMLElement | null {
         h('div', { class: 'progress' }, h('div', { class: 'bar', style: { width: `${Math.round(j.progress * 100)}%` } })),
         h('div', { class: 'hint' }, j.status === 'failed' ? `失敗: ${j.error ?? ''}` : j.message),
         j.status === 'failed'
+          ? button('閉じる', () => {
+              store.state.jobs = store.state.jobs.filter((x) => x.id !== j.id);
+              store.emit('jobs');
+            }, { class: 'small' })
+          : null,
+        j.status === 'failed'
           ? button('再試行', async () => {
+              // 文字起こし・素材の割り当ては「いまの設定」でやり直す(選び直したモデルなどを反映するため)
+              if (j.type === 'transcribe' || j.type === 'ai-assign') {
+                store.state.jobs = store.state.jobs.filter((x) => x.id !== j.id);
+                store.emit('jobs');
+                if (j.type === 'transcribe') void runAutoEdit();
+                else void runAiAssign();
+                return;
+              }
               try {
                 const nj = await api.retryJob(j.id);
                 store.state.jobs = store.state.jobs.filter((x) => x.id !== j.id);
@@ -326,8 +340,8 @@ function geminiBox(p: Project): HTMLElement {
       toast((e as Error).message, 'error');
     }
   };
-  const models = geminiState.models.length ? geminiState.models : [p.asr.geminiModel];
-  if (!models.includes(p.asr.geminiModel)) models.unshift(p.asr.geminiModel);
+  const models = [...geminiState.models];
+  if (p.asr.geminiModel !== 'auto' && !models.includes(p.asr.geminiModel)) models.unshift(p.asr.geminiModel);
   return h(
     'div',
     null,
@@ -345,7 +359,7 @@ function geminiBox(p: Project): HTMLElement {
       h(
         'div',
         { class: 'row gap' },
-        select(p.asr.geminiModel, models.map((m) => [m, m] as [string, string]), (v) => store.commit((pp) => ({ ...pp, asr: { ...pp.asr, geminiModel: v } }))),
+        select(p.asr.geminiModel, [['auto', '自動(最新の flash)'] as [string, string], ...models.map((m) => [m, m] as [string, string])], (v) => store.commit((pp) => ({ ...pp, asr: { ...pp.asr, geminiModel: v } }))),
         button('モデル一覧を取得', async () => {
           try {
             geminiState.models = await api.geminiModels();
@@ -355,7 +369,7 @@ function geminiBox(p: Project): HTMLElement {
           }
         }, { disabled: !geminiState.keySource }),
       ),
-      'flash 系は速く安価、pro 系はより高精度です',
+      '「自動」は実行時に最新の flash モデルを選びます。flash 系は速く安価、pro 系はより高精度です',
     ),
     h(
       'div',

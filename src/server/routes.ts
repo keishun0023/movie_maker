@@ -4,7 +4,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import type { Asset, JobInfo, Project, StylePreset, Timeline, Transcript } from '../shared/types.js';
 import { speechChunks, tokensFromChunks } from '../shared/chunks.js';
-import { assertGeminiModel, geminiTranscribe, listGeminiModels } from './asr/gemini.js';
+import { geminiTranscribe, listGeminiModels, resolveGeminiModel } from './asr/gemini.js';
 import { anthropicKey, anthropicKeySource, geminiKey, geminiKeySource, setAnthropicKey, setGeminiKey } from './secrets.js';
 import { aiAssign } from './ai/assign.js';
 import { outToSrc } from '../shared/timemap.js';
@@ -320,12 +320,17 @@ type TranscribeBody = {
   timeline?: Timeline;
 };
 
-function transcribeWithGemini(id: string, body: TranscribeBody): JobInfo {
+async function transcribeWithGemini(id: string, body: TranscribeBody): Promise<JobInfo> {
   const key = assertId(body.sourceKey);
   const apiKey = geminiKey();
   if (!apiKey) throw new HttpError(400, 'Gemini の APIキーが設定されていません。「自動編集」の画面で設定してください。');
   if (body.cloudConsent !== true) throw new HttpError(400, '音声を Gemini に送信することへの同意が必要です。');
-  const model = assertGeminiModel(String(body.geminiModel ?? ''));
+  let model: string;
+  try {
+    model = await resolveGeminiModel(String(body.geminiModel || 'auto'), apiKey);
+  } catch (e) {
+    throw new HttpError(400, e instanceof Error ? e.message : String(e));
+  }
   const hints = body.useHints && body.script ? hintTerms(body.script) : [];
   const sens = Number(body.sensitivityDb ?? 0) || 0;
   const cacheKey = crypto.createHash('sha1').update(JSON.stringify(['gemini', key, model, hints, sens, 1])).digest('hex').slice(0, 20);
@@ -363,7 +368,7 @@ function transcribeWithGemini(id: string, body: TranscribeBody): JobInfo {
 router.post('/api/projects/:id/transcribe', async (req, res) => {
   const id = assertId(req.params.id!);
   const body = await readJson<TranscribeBody>(req);
-  if (body.engine === 'gemini') return sendJson(res, 200, transcribeWithGemini(id, body));
+  if (body.engine === 'gemini') return sendJson(res, 200, await transcribeWithGemini(id, body));
   const key = assertId(body.sourceKey);
   const def = modelDef(body.modelId);
   if (!def) throw new HttpError(400, 'モデルが正しくありません');

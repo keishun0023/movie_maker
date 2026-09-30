@@ -16,8 +16,8 @@ import { buildTimeline, clampSpeed, identityTimeline, msToSamples, speedKeyOf, s
 import { buildCaptions, buildScenes, carryOverScenes, DEFAULT_SEGMENT_OPTIONS, mergeCaptions, splitLongScenes, usableTokens, type SegmentOptions } from './segment.js';
 import { charsPerLineFor, DEFAULT_STYLE } from './captionRender.js';
 
-/** 初期値。画面でAPIから取得したモデル一覧に切り替えられる */
-export const DEFAULT_GEMINI_MODEL = 'gemini-2.5-flash';
+/** 初期値 'auto' は、実行時に API のモデル一覧から最新の flash モデルを選ぶ(モデル名は入れ替わるため) */
+export const DEFAULT_GEMINI_MODEL = 'auto';
 
 export function createProject(id: string, name: string): Project {
   const now = new Date().toISOString();
@@ -57,6 +57,8 @@ export function migrateProject(p: Partial<Project> & { id: string; name: string 
   merged.export = { ...base.export, ...(p.export ?? {}) };
   merged.safeArea = { ...base.safeArea, ...(p.safeArea ?? {}) };
   merged.asr = { ...base.asr, ...(p.asr ?? {}) };
+  // 以前の初期値(提供終了)は自動選択に切り替える
+  if (merged.asr.geminiModel === 'gemini-2.5-flash') merged.asr.geminiModel = 'auto';
   merged.sceneLen = { ...base.sceneLen, ...(p.sceneLen ?? {}) };
   merged.aiAssign = { ...base.aiAssign, ...(p.aiAssign ?? {}) };
   merged.mix = { ...base.mix, ...(p.mix ?? {}) };
