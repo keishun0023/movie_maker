@@ -58,11 +58,12 @@ test('Claude API へ素材のフレームとカットの文章を送り、提案
         format: j.output_config?.format?.type,
         text: content.filter((c) => c.type === 'text').map((c) => c.text).join('\n'),
       };
+      // 同じ場面ばかり挙げても、近いカットでは重ならないように選び直される
       const out = {
         assignments: [
-          { scene: 1, assetId: 'vid1', startSec: 99, reason: '走っている場面' },
-          { scene: 2, assetId: 'img1', startSec: 3, reason: '料理の写真' },
-          { scene: 3, assetId: 'nope', startSec: 0, reason: '存在しない素材' },
+          { scene: 1, choices: [{ shot: 'V1-2', reason: '青い場面' }] },
+          { scene: 2, choices: [{ shot: 'V1-2', reason: '青い場面' }, { shot: 'I1', reason: '料理の写真' }] },
+          { scene: 3, choices: [{ shot: 'nope', reason: '存在しない場面' }] },
         ],
       };
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -77,7 +78,8 @@ test('Claude API へ素材のフレームとカットの文章を送り、提案
     const p = createProject('pai-test', 'AI');
     const dir = path.join(dataDir, 'projects', p.id, 'assets');
     fs.mkdirSync(dir, { recursive: true });
-    execFileSync('ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc=s=320x240:r=10:d=6', '-pix_fmt', 'yuv420p', path.join(dir, 'vid1.mp4')]);
+    // 赤 → 青 → 模様 → 緑 と切り替わる動画(場面が4つ)
+    execFileSync('ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=red:s=320x240:r=10:d=1.5', '-f', 'lavfi', '-i', 'color=c=blue:s=320x240:r=10:d=1.5', '-f', 'lavfi', '-i', 'testsrc=s=320x240:r=10:d=1.5', '-f', 'lavfi', '-i', 'color=c=green:s=320x240:r=10:d=1.5', '-filter_complex', '[0:v][1:v][2:v][3:v]concat=n=4:v=1:a=0', '-pix_fmt', 'yuv420p', path.join(dir, 'vid1.mp4')]);
     execFileSync('ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=red:s=200x300', '-frames:v', '1', path.join(dir, 'img1.png')]);
     const base = { size: 1, hash: 'x', importedAt: '', status: 'ok' as const, warnings: [] };
     p.assets = [
@@ -95,13 +97,18 @@ test('Claude API へ素材のフレームとカットの文章を送り、提案
     assert.ok(seen.beta!.includes('server-side-fallback-2026-07-01'));
     assert.equal(seen.fallbacks, 'default');
     assert.equal(seen.format, 'json_schema');
-    assert.ok(seen.images >= 3, `images ${seen.images}`); // 動画の複数フレーム + 画像
+    // 動画は場面の切り替わりで4つの場面に分け、場面ごとに画像を送る
+    assert.equal(seen.images, 5, `images ${seen.images}`);
+    for (const id of ['V1-1', 'V1-2', 'V1-3', 'V1-4', 'I1']) assert.ok(seen.text.includes(id), id);
     assert.ok(seen.text.includes('カット1 (2秒): 朝ランニングをします'));
-    // 動画の開始位置は「動画の長さ - カットの長さ」に収める。存在しない素材は捨てる
-    assert.deepEqual(r.assignments.map((a) => [a.sceneId, a.assetId, a.startSec]), [
-      ['s0', 'vid1', 4],
+    // カット1 は V1-2(1.5秒〜)。カット2 は同じ場面を避けて第2候補の画像。カット3 は近くと重ならない場面
+    const got = r.assignments.map((a) => [a.sceneId, a.assetId, a.startSec]);
+    assert.deepEqual(got.slice(0, 2), [
+      ['s0', 'vid1', 1.5],
       ['s1', 'img1', 0],
     ]);
+    assert.equal(got[2]![1], 'vid1');
+    assert.notEqual(r.assignments[2]!.reason.split(' ')[0], 'V1-2');
     assert.ok(r.notes.some((n) => n.includes('1 カットは提案が返らなかった')));
   } finally {
     server.close();
