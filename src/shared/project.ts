@@ -13,7 +13,7 @@ import {
 } from './types.js';
 import { CUT_PRESETS, DEFAULT_CUT_PRESET, decideCuts, detectSilences, flagTokens, levelStats, protectBySpeech, removeRangesFromCuts } from './silence.js';
 import { buildTimeline, clampSpeed, identityTimeline, msToSamples, speedKeyOf, srcToOut } from './timemap.js';
-import { buildCaptions, buildScenes, carryOverScenes, DEFAULT_SEGMENT_OPTIONS, mergeCaptions, splitLongScenes, usableTokens, type SegmentOptions } from './segment.js';
+import { buildCaptions, buildScenes, carryOverScenes, DEFAULT_SEGMENT_OPTIONS, mergeCaptions, splitLongScenes, applyRhythm, usableTokens, type SegmentOptions } from './segment.js';
 import { charsPerLineFor, DEFAULT_STYLE } from './captionRender.js';
 
 /** 初期値 'auto' は、実行時に API のモデル一覧から最新の flash モデルを選ぶ(モデル名は入れ替わるため) */
@@ -78,6 +78,10 @@ export function segmentOptionsFor(p: Project): SegmentOptions {
     maxLines: p.style.maxLines,
     sceneMinSec: p.sceneLen.minSec,
     sceneMaxSec: p.sceneLen.maxSec,
+    introSec: p.sceneLen.introSec ?? 0,
+    introMaxSec: p.sceneLen.introMaxSec ?? 0,
+    // 短く区切る: 1行・約8文字で、話の区切り(「〜は」など)ごとにテロップを分ける
+    ...(p.captionLen === 'short' ? { charsPerLine: Math.min(8, charsPerLineFor(p.style)), maxLines: 1, captionMinSec: 0.4, captionMaxSec: 1.6 } : {}),
   };
 }
 
@@ -171,7 +175,7 @@ export function autoEdit(p: Project, a: AnalysisData, opt: AutoEditOptions = { k
     ? normalizeScenes(p.scenes, dur)
     : carryOverScenes(
         p.scenes,
-        splitLongScenes(buildScenes(caps, tl, dur, segmentOptionsFor(next)), usableTokens(tokens), tl, segmentOptionsFor(next)),
+        cutToLength({ ...next, captions: caps }, buildScenes(caps, tl, dur, segmentOptionsFor(next))),
       );
   return { ...next, captions: markCaptionReview(caps, tl), scenes };
 }
@@ -211,7 +215,15 @@ export const secondsOf = (samples: number) => samples / SR;
 export function splitScenesToCutLength(p: Project): Project {
   if (!p.narration || p.scenes.length === 0) return p;
   const tl = timelineOf(p);
-  const tokens = usableTokens(p.transcript?.tokens ?? []);
-  const scenes = splitLongScenes(p.scenes, tokens, tl, segmentOptionsFor(p));
+  void tl;
+  const scenes = cutToLength(p, p.scenes);
   return scenes.length === p.scenes.length ? p : { ...p, scenes };
+}
+
+/** カット割りの設定(均等 / メリハリ)に合わせて、長いカットを分ける */
+function cutToLength(p: Project, scenes: Scene[]): Scene[] {
+  const tl = timelineOf(p);
+  const tokens = usableTokens(p.transcript?.tokens ?? []);
+  const opt = segmentOptionsFor(p);
+  return p.sceneLen.rhythm === 'mix' ? applyRhythm(scenes, tokens, tl, p.captions, opt) : splitLongScenes(scenes, tokens, tl, opt);
 }

@@ -3,6 +3,7 @@
 import { SR, type Caption, type Scene, type Timeline, type Token } from './types.js';
 import { charClass, displayFromRaw, estimateWidth } from './jatext.js';
 import { msToSamples, outToSrc, srcToOut } from './timemap.js';
+import { splitJaText } from './chunks.js';
 
 export interface SegmentOptions {
   /** 1行あたりの全角文字数の目安 */
@@ -12,6 +13,9 @@ export interface SegmentOptions {
   captionMaxSec: number;
   sceneMinSec: number;
   sceneMaxSec: number;
+  /** 冒頭のこの秒数だけ、カットの最大長を introMaxSec にする(0 なら無効) */
+  introSec?: number;
+  introMaxSec?: number;
 }
 
 export const DEFAULT_SEGMENT_OPTIONS: SegmentOptions = {
@@ -137,8 +141,69 @@ export function joinTokenText(tokens: Token[]): string {
 }
 
 /** トークンからテロップを生成する */
+interface WordToken {
+  token: Token;
+  /** 元のトークンID */
+  orig: string[];
+}
+
+/**
+ * 認識トークン(whisper では 1〜2 文字の断片になりがち)を、辞書ベースの語に組み直す。
+ * 語の時刻は、各トークンの時間を文字数で割り振った文字ごとの時刻から求める。
+ * 発話の間(80ms 以上)をまたいでは組み直さない。
+ */
+export function regroupToWords(tokens: Token[]): WordToken[] {
+  const out: WordToken[] = [];
+  let run: Token[] = [];
+  const flush = () => {
+    if (!run.length) return;
+    const chars: { ch: string; start: number; end: number; id: string }[] = [];
+    for (const t of run) {
+      const cs = Array.from(t.text);
+      const n = cs.length || 1;
+      cs.forEach((ch, i) => chars.push({ ch, start: Math.round(t.start + ((t.end - t.start) * i) / n), end: Math.round(t.start + ((t.end - t.start) * (i + 1)) / n), id: t.id }));
+    }
+    const text = chars.map((c) => c.ch).join('');
+    const lead = text.length - text.trimStart().length;
+    let pos = Array.from(text.slice(0, lead)).length;
+    const words = splitJaText(text);
+    const base = run[0]!;
+    for (const w of words) {
+      const len = Array.from(w).length;
+      // 空白は splitJaText で落ちるので、元の文字列上の位置を探して合わせる
+      while (pos < chars.length && /\s/.test(chars[pos]!.ch)) pos++;
+      const part = chars.slice(pos, pos + len);
+      pos += len;
+      if (!part.length) continue;
+      const ids = [...new Set(part.map((c) => c.id))];
+      const src = run.filter((t) => ids.includes(t.id));
+      const tok: Token = {
+        id: ids.join('+'),
+        text: w,
+        start: part[0]!.start,
+        end: Math.max(part[part.length - 1]!.end, part[0]!.start + 1),
+        p: Math.min(...src.map((t) => t.p)),
+        seg: base.seg,
+        timing: src.every((t) => t.timing === 'segment') ? 'segment' : src.some((t) => t.timing === 'chunk') ? 'chunk' : base.timing,
+      };
+      const flags = [...new Set(src.flatMap((t) => t.flags ?? []))];
+      if (flags.length) tok.flags = flags;
+      out.push({ token: tok, orig: ids });
+    }
+    run = [];
+  };
+  for (const t of tokens) {
+    const prev = run[run.length - 1];
+    if (prev && (t.start - prev.end > msToSamples(80) || t.seg !== prev.seg)) flush();
+    run.push(t);
+  }
+  flush();
+  return out;
+}
+
 export function buildCaptions(tokens: Token[], tl: Timeline | null, opt: SegmentOptions = DEFAULT_SEGMENT_OPTIONS): Caption[] {
-  const use = usableTokens(tokens);
+  const words = regroupToWords(usableTokens(tokens));
+  const use = words.map((w) => w.token);
   const ranges = splitIntoCaptionRanges(use, tl, opt);
   return ranges.map(([i, j]) => {
     const toks = use.slice(i, j);
@@ -150,7 +215,7 @@ export function buildCaptions(tokens: Token[], tl: Timeline | null, opt: Segment
       id: newId('cap'),
       srcStart: toks[0]!.start,
       srcEnd: toks[toks.length - 1]!.end,
-      tokenIds: toks.map((t) => t.id),
+      tokenIds: [...new Set(words.slice(i, j).flatMap((w) => w.orig))],
       rawText: raw,
       text: displayFromRaw(raw),
       textEdited: false,
@@ -224,11 +289,13 @@ export function buildScenes(captions: Caption[], tl: Timeline | null, srcSamples
  */
 export function splitLongScenes(scenes: Scene[], tokens: Token[], tl: Timeline | null, opt: SegmentOptions): Scene[] {
   const out: Scene[] = [];
-  const maxS = opt.sceneMaxSec * SR;
   for (const sc of scenes) {
     const o0 = tokenOut(tl, sc.srcStart);
     const o1 = tokenOut(tl, sc.srcEnd);
     const dur = o1 - o0;
+    // 冒頭は特に細かく切る
+    const intro = opt.introSec && opt.introMaxSec && o0 < opt.introSec * SR;
+    const maxS = (intro ? Math.min(opt.introMaxSec!, opt.sceneMaxSec) : opt.sceneMaxSec) * SR;
     if (dur <= maxS * 1.05) {
       out.push(sc);
       continue;
@@ -258,6 +325,41 @@ export function splitLongScenes(scenes: Scene[], tokens: Token[], tl: Timeline |
     for (let i = 0; i < bounds.length - 1; i++) {
       if (bounds[i + 1]! <= bounds[i]!) continue;
       out.push({ ...sc, id: i === 0 ? sc.id : newId('scn'), srcStart: bounds[i]!, srcEnd: bounds[i + 1]!, bg: sc.bg ? { ...sc.bg } : null, inset: i === 0 ? sc.inset : null });
+    }
+  }
+  return out;
+}
+
+/**
+ * メリハリのあるカット割り:
+ * - 冒頭は細かく(つかみ)
+ * - 「！」「？」や数字のある強調の箇所は1秒前後で速く
+ * - 説明の箇所は長め(〜3秒)と短め(約1.4秒)を交互に。速いカットが3つ続いたら次は長めにして息継ぎさせる
+ */
+export function applyRhythm(scenes: Scene[], tokens: Token[], tl: Timeline | null, captions: Caption[], opt: SegmentOptions): Scene[] {
+  const out: Scene[] = [];
+  let fastRun = 0;
+  let calm = 0;
+  const durOf = (sc: Scene) => (tokenOut(tl, sc.srcEnd) - tokenOut(tl, sc.srcStart)) / SR;
+  const introEnd = (opt.introSec || 3) * SR;
+  for (const sc of scenes) {
+    const o0 = tokenOut(tl, sc.srcStart);
+    const text = captions
+      .filter((c) => c.srcStart < sc.srcEnd && c.srcEnd > sc.srcStart)
+      .map((c) => c.rawText || c.text)
+      .join('');
+    const emphatic = /[！!？?]|[0-9０-９]/.test(text);
+    let target: number;
+    if (o0 < introEnd) target = opt.introMaxSec || 0.8;
+    else if (emphatic) target = 1.1;
+    else if (fastRun >= 3) target = 3;
+    // 説明の箇所は「長め」と「短め」を交互にして、一定のテンポにならないようにする
+    else target = calm++ % 2 === 0 ? 3 : 1.4;
+    const pieces = splitLongScenes([sc], tokens, tl, { ...opt, sceneMaxSec: target, introSec: 0 });
+    for (const pc of pieces) {
+      if (durOf(pc) < 1.3) fastRun++;
+      else fastRun = 0;
+      out.push(pc);
     }
   }
   return out;

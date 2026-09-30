@@ -6,6 +6,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { SR, type Asset, type Project, type Scene, type Timeline } from '../shared/types.js';
 import { cropScaleFor, placeBackground, placeInset } from '../shared/fit.js';
+import { motionExprs, motionOf, toFfmpegExpr } from '../shared/motion.js';
 import { frameToSample, sampleToFrame, sourcePiecesForOutput, srcToOut, totalFrames } from '../shared/timemap.js';
 import { timelineOf } from '../shared/project.js';
 import type { JobContext } from './jobs.js';
@@ -144,12 +145,17 @@ async function renderSceneSegment(
       filters.push(`${cur}[fg]overlay=x=${cs.outX}:y=${cs.outY}:format=yuv420:shortest=0[bgd]`);
       cur = '[bgd]';
     }
-    if (bg.kenBurns) {
-      const N = Math.max(1, n - 1);
+    // カット内の動き(プレビューと同じ式をフレームごとに評価する)
+    const mex = motionExprs(motionOf(bg), dur, W, H);
+    if (mex) {
+      const S = toFfmpegExpr(mex.s, fps);
+      const DX = toFfmpegExpr(mex.dx, fps);
+      const DY = toFfmpegExpr(mex.dy, fps);
       filters.push(
-        `${cur}scale=w='trunc(${W}*(1+0.08*n/${N})/2)*2':h='trunc(${H}*(1+0.08*n/${N})/2)*2':eval=frame,crop=${W}:${H}:(iw-${W})/2:(ih-${H})/2[kb]`,
+        `${cur}format=gbrp,scale=w='ceil(${W}*(${S}))':h='ceil(${H}*(${S}))':eval=frame:flags=bicubic,` +
+          `crop=${W}:${H}:x='max(0,min(iw-${W},(iw-${W})/2-(${DX})))':y='max(0,min(ih-${H},(ih-${H})/2-(${DY})))',format=yuv420p[mo]`,
       );
-      cur = '[kb]';
+      cur = '[mo]';
     }
   }
   const inset = span.scene.inset;

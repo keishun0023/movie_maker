@@ -1,10 +1,11 @@
 // 右パネル: 手順ごとの設定(取り込み / 自動編集 / 確認して修正 / 書き出し)。
-import { SR, type Asset, type Caption, type CaptionStyle, type CutParams, type CutPresetId, type Project, type Scene } from '../shared/types.js';
+import { SR, type Asset, type Caption, type CaptionStyle, type CutParams, type CutPresetId, type Motion, type MotionType, type Project, type Scene } from '../shared/types.js';
 import { CUT_PRESETS } from '../shared/silence.js';
 import { presetParams, splitScenesToCutLength, timelineOf } from '../shared/project.js';
 import { captionOutputTimings, sceneOutputRanges } from '../shared/segment.js';
 import { suggestFromScript } from '../shared/script.js';
 import { DEFAULT_STYLE, effectiveStyle } from '../shared/captionRender.js';
+import { MOTION_LABELS, motionOf } from '../shared/motion.js';
 import { outToSrc, srcToOut } from '../shared/timemap.js';
 import { api, mediaUrl } from './api.js';
 import { button, checkbox, colorInput, field, fmtBytes, fmtSec, h, numInput, select, slider, toast } from './dom.js';
@@ -19,6 +20,8 @@ import {
   mergeScene,
   rebuildCaptions,
   runAiAssign,
+  applyAutoMotions,
+  clearMotions,
   runAutoEdit,
   selectedModelId,
   setNarration,
@@ -312,7 +315,7 @@ function autoView(player: Player): HTMLElement {
       : null,
     h('p', { class: 'hint' }, 'ナレーションだけで字幕なしの動画や、手入力のテロップで作る場合は、文字起こしをせずに「3 確認して修正」へ進めます。'),
   );
-  return h('div', { class: 'panel-body' }, cutSection, asrSection, sceneLenSection(p), run, aiAssignSection(p), button('次へ: 確認して修正 →', () => store.setUi({ step: 3 }), { class: 'next' }));
+  return h('div', { class: 'panel-body' }, cutSection, asrSection, sceneLenSection(p), run, aiAssignSection(p), motionSection(p), button('次へ: 確認して修正 →', () => store.setUi({ step: 3 }), { class: 'next' }));
 }
 
 // Gemini の設定状態(APIキーそのものは画面に返さない)
@@ -395,24 +398,45 @@ function geminiBox(p: Project): HTMLElement {
   );
 }
 
-/** 1カットの長さ */
+/** 1カットの長さ・テロップの長さ */
 function sceneLenSection(p: Project): HTMLElement {
   const presets: [string, number, number][] = [
+    ['0.5〜1秒(超テンポ)', 0.5, 1],
     ['1〜2秒(テンポ重視)', 1, 2],
     ['2〜3秒', 2, 3],
     ['2〜5秒(標準)', 2, 5],
   ];
-  const cur = presets.find(([, a, b]) => a === p.sceneLen.minSec && b === p.sceneLen.maxSec);
+  const mix = p.sceneLen.rhythm === 'mix';
+  const cur = mix ? undefined : presets.find(([, a, b]) => a === p.sceneLen.minSec && b === p.sceneLen.maxSec);
+  const intro = (p.sceneLen.introSec ?? 0) > 0;
+  const setLen = (patch: Partial<Project['sceneLen']>) => store.commit((pp) => splitScenesToCutLength({ ...pp, sceneLen: { ...pp.sceneLen, ...patch } }));
+  const short = p.captionLen === 'short';
   return section(
-    '1カットの長さ',
-    h(
-      'div',
-      { class: 'seg-buttons' },
-      presets.map(([label, a, b]) =>
-        h('button', { type: 'button', class: cur?.[1] === a && cur?.[2] === b ? 'on' : '', onclick: () => store.commit((pp) => splitScenesToCutLength({ ...pp, sceneLen: { minSec: a, maxSec: b } })) }, label),
+    'カット割り・テロップの長さ',
+    field(
+      '1カットの長さ',
+      h(
+        'div',
+        { class: 'seg-buttons' },
+        h('button', { type: 'button', class: mix ? 'on' : '', onclick: () => setLen({ minSec: 1.5, maxSec: 3, rhythm: 'mix', introSec: 3, introMaxSec: 0.7 }) }, 'メリハリ(おすすめ)'),
+        presets.map(([label, a, b]) => h('button', { type: 'button', class: cur?.[1] === a && cur?.[2] === b ? 'on' : '', onclick: () => setLen({ minSec: a, maxSec: b, rhythm: 'even' }) }, label)),
       ),
     ),
-    h('p', { class: 'hint' }, '背景を切り替える間隔の目安です。自動編集(または下の「テロップ・シーンを作り直す」)のときに反映されます。長い文でも、この長さを超えるカットは語の切れ目で分けます。'),
+    mix
+      ? h('p', { class: 'hint' }, '冒頭3秒は0.7秒以下で細かく、「！」「？」や数字のある強調の箇所は約1秒、説明の箇所は長め(〜3秒)と短め(約1.4秒)を交互に。速いカットが3つ続いたら次は長めにして、速い・遅いを織り交ぜます。')
+      : checkbox(intro, '冒頭3秒はさらに細かく切る(1カット0.8秒以下)', (v) => setLen(v ? { introSec: 3, introMaxSec: 0.8 } : { introSec: 0, introMaxSec: 0 })),
+    field(
+      'テロップの長さ',
+      h(
+        'div',
+        { class: 'seg-buttons' },
+        h('button', { type: 'button', class: !short ? 'on' : '', onclick: () => store.commit((pp) => ({ ...pp, captionLen: 'normal' })) }, '標準(2行まで)'),
+        h('button', { type: 'button', class: short ? 'on' : '', onclick: () => store.commit((pp) => ({ ...pp, captionLen: 'short' })) }, '短く区切る(1行・約8文字)'),
+      ),
+      '「短く区切る」は「色黒女子は / 全員これ使え」のように、話の区切りごとにテロップを分けます',
+    ),
+    h('p', { class: 'hint' }, 'カットの長さは、長すぎるカットをその場で語の切れ目で分けます。テロップの長さと、短いカットをまとめ直すには「テロップ・シーンを作り直す」(または自動編集)を押してください。'),
+    p.transcript ? button('この設定でテロップ・シーンを作り直す(手動修正は保持)', () => rebuildCaptions(true)) : null,
   );
 }
 
@@ -547,7 +571,8 @@ function sceneInspector(s: Scene, player: Player): HTMLElement {
                   )
                 : null,
             )
-          : checkbox(bg.kenBurns, 'ゆっくりズーム', (v) => setBg({ kenBurns: v })),
+          : null,
+        motionFields(bg, (m) => setBg({ kenBurns: false, motion: m })),
       )
     : null;
   const inset = s.inset;
@@ -605,6 +630,31 @@ function sceneInspector(s: Scene, player: Player): HTMLElement {
           )
         : null,
     ),
+  );
+}
+
+/** カット内の動き(ズーム・パン・揺れ) */
+function motionFields(bg: NonNullable<Scene['bg']>, set: (m: Motion) => void): HTMLElement {
+  const m = motionOf(bg) ?? { type: 'none' as const, strength: 1 };
+  return h(
+    'div',
+    null,
+    field('動き', select(m.type, (Object.keys(MOTION_LABELS) as MotionType[]).map((k) => [k, MOTION_LABELS[k]] as [MotionType, string]), (v) => set({ type: v, strength: m.strength }))),
+    m.type !== 'none'
+      ? field('動きの強さ', slider(m.strength, { min: 0.3, max: 2, step: 0.1, format: (v) => `${Math.round(v * 100)}%`, onChange: (v) => set({ type: m.type, strength: v }) }))
+      : null,
+  );
+}
+
+/** おまかせの動き */
+function motionSection(p: Project): HTMLElement {
+  return section(
+    'カット内の動き',
+    h('p', { class: 'hint' }, '背景にズーム・パン・揺れなどの動きを付けて、カットの中でも画面が動くようにします。「！」「？」のあるカットには強めの動き(パンチイン・インパクト・揺れ)を、それ以外にはゆっくりした動きを、連続しないように割り振ります。'),
+    field('強さ', slider(p.motionStrength ?? 1, { min: 0.3, max: 2, step: 0.1, format: (v) => `${Math.round(v * 100)}%`, onChange: (v) => store.commit((pp) => ({ ...pp, motionStrength: v }), { coalesce: 'motion-strength', skip: 'right' }) })),
+    h('div', { class: 'row gap wrap' }, button('全カットにおまかせで動きを付ける', () => applyAutoMotions(), { class: 'primary' }), button('動きをすべて外す', () => clearMotions())),
+    checkbox(p.motionAuto !== false, 'Claude で素材を割り当てたら、動きも自動で付ける', (v) => store.commit((pp) => ({ ...pp, motionAuto: v }))),
+    h('p', { class: 'hint' }, 'カットごとの動きは「3 確認して修正」でカットを選ぶと変えられます。'),
   );
 }
 

@@ -2,6 +2,7 @@
 import { SR, type Asset, type BgPlacement, type Caption, type JobInfo, type Project, type Scene, type Transcript } from '../shared/types.js';
 import { autoEdit, ensureTimelineSpeeds, markCaptionReview, normalizeScenes, recomputeCut, splitScenesToCutLength, timelineOf } from '../shared/project.js';
 import { captionOutputTimings, newId, sceneOutputRanges } from '../shared/segment.js';
+import { autoMotions } from '../shared/motion.js';
 import { drawCaption, effectiveStyle } from '../shared/captionRender.js';
 import { displayFromRaw } from '../shared/jatext.js';
 import { outToSrc, srcToOut } from '../shared/timemap.js';
@@ -526,6 +527,40 @@ export async function runAiAssign() {
       return { ...sc, bg: { ...defaultBg(asset, p), mode: 'independent', startSec: a.startSec }, aiNote: a.reason };
     }),
   }));
+  // 割り当てと同じ操作で動きも付ける(1回の 元に戻す でまとめて取り消せるよう、履歴はまとめる)
+  if (store.p.motionAuto !== false) store.commit((p) => withAutoMotions(p), { noHistory: true });
   toast(`Claude の提案で ${assignments.length} カットに素材を割り当てました(元に戻す で取り消せます)\n${notes.join('\n')}`, 'ok', 8000);
   store.setUi({ step: 3, leftTab: 'scenes' });
+}
+
+/** 各カットで話している内容(カットの中央を含むテロップ) */
+function sceneTextOf(p: Project): (s: Scene) => string {
+  const tl = timelineOf(p);
+  if (!tl) return () => '';
+  const ranges = new Map(sceneOutputRanges(p.scenes, tl).map((r) => [r.id, r]));
+  const caps = captionOutputTimings(p.captions, tl);
+  const byId = new Map(p.captions.map((c) => [c.id, c]));
+  return (s) => {
+    const r = ranges.get(s.id);
+    if (!r) return '';
+    return caps.filter((c) => c.outStart < r.outEnd && c.outEnd > r.outStart).map((c) => byId.get(c.id)?.text ?? '').join(' ');
+  };
+}
+
+/** 背景のあるカットに、おまかせで動きを付ける */
+export function withAutoMotions(p: Project): Project {
+  const withBg = p.scenes.filter((s) => s.bg);
+  const motions = autoMotions(withBg, sceneTextOf(p), p.motionStrength ?? 1);
+  const byId = new Map(withBg.map((s, i) => [s.id, motions[i]!]));
+  return { ...p, scenes: p.scenes.map((s) => (s.bg && byId.has(s.id) ? { ...s, bg: { ...s.bg, kenBurns: false, motion: byId.get(s.id)! } } : s)) };
+}
+
+export function applyAutoMotions() {
+  if (!store.p.scenes.some((s) => s.bg)) return toast('先にカットに素材を割り当ててください');
+  store.commit((p) => withAutoMotions(p));
+  toast('各カットに動きを付けました(元に戻す で取り消せます)', 'ok');
+}
+
+export function clearMotions() {
+  store.commit((p) => ({ ...p, scenes: p.scenes.map((s) => (s.bg ? { ...s, bg: { ...s.bg, kenBurns: false, motion: { type: 'none', strength: 1 } } } : s)) }));
 }

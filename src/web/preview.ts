@@ -1,7 +1,8 @@
 // 9:16 プレビュー。書き出しと同じ配置計算・同じテロップ描画関数を使う。
 import { SR, type Asset, type Caption, type Project, type Scene, type Timeline } from '../shared/types.js';
 import { captionOutputTimings, sceneOutputRanges, type CaptionTiming } from '../shared/segment.js';
-import { kenBurnsScale, placeBackground, placeInset } from '../shared/fit.js';
+import { placeBackground, placeInset } from '../shared/fit.js';
+import { evalMotion, motionExprs, motionOf } from '../shared/motion.js';
 import { drawCaption, effectiveStyle, type CaptionBox } from '../shared/captionRender.js';
 import { outToSrc, srcToOut } from '../shared/timemap.js';
 import { timelineOf } from '../shared/project.js';
@@ -427,8 +428,13 @@ export class Player {
     if (!media || !a.width || !a.height) return;
     const pl = placeBackground(a.width, a.height, W, H, bg);
     Object.assign(media.style, { left: `${pl.x}px`, top: `${pl.y}px`, width: `${pl.w}px`, height: `${pl.h}px` });
-    const progress = (t - sr.outStart) / Math.max(1, sr.outEnd - sr.outStart);
-    layer.el.style.transform = bg.kenBurns ? `scale(${kenBurnsScale(progress)})` : '';
+    // カット内の動き(書き出しと同じ式)
+    const mex = motionExprs(motionOf(bg), (sr.outEnd - sr.outStart) / SR, W, H);
+    if (mex) {
+      const m = evalMotion(mex, Math.max(0, (t - sr.outStart) / SR));
+      const lim = (v: number, size: number) => Math.max(-((m.s - 1) * size) / 2, Math.min(((m.s - 1) * size) / 2, v));
+      layer.el.style.transform = `translate(${lim(m.dx, W)}px, ${lim(m.dy, H)}px) scale(${m.s})`;
+    } else layer.el.style.transform = '';
     const v = layer.video;
     if (v) {
       let want: number;

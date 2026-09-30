@@ -201,6 +201,15 @@ export interface Caption {
   review?: string;
 }
 
+export type MotionType = 'none' | 'zoomIn' | 'zoomOut' | 'panLeft' | 'panRight' | 'panUp' | 'panDown' | 'punchIn' | 'impact' | 'shake';
+
+/** カット内の背景の動き */
+export interface Motion {
+  type: MotionType;
+  /** 強さ 0.3〜2(1 が標準) */
+  strength: number;
+}
+
 export interface BgPlacement {
   assetId: string;
   fit: 'cover' | 'contain';
@@ -215,7 +224,9 @@ export interface BgPlacement {
   mode: 'independent' | 'synced';
   audio: boolean;
   volumeDb: number;
+  /** 旧設定(ゆっくりズーム)。motion があればそちらを使う */
   kenBurns: boolean;
+  motion?: Motion;
 }
 
 export interface InsetPlacement {
@@ -292,7 +303,21 @@ export interface Project {
   export: ExportSettings;
   safeArea: SafeAreaGuide;
   /** 1カット(シーン)の長さの目安(秒) */
-  sceneLen: { minSec: number; maxSec: number };
+  sceneLen: {
+    minSec: number;
+    maxSec: number;
+    /** 冒頭 introSec 秒は、1カットを introMaxSec 秒以下にする(0 なら無効) */
+    introSec?: number;
+    introMaxSec?: number;
+    /** mix: 速いカットと遅いカットを織り交ぜる(メリハリ) */
+    rhythm?: 'even' | 'mix';
+  };
+  /** テロップの長さ: normal(2行まで) / short(1行・短く区切る) */
+  captionLen?: 'normal' | 'short';
+  /** 素材を割り当てたときに、おまかせで動きも付ける(初期値 true) */
+  motionAuto?: boolean;
+  /** おまかせの動きの強さ */
+  motionStrength?: number;
   /** Claude による素材の自動割り当て */
   aiAssign: {
     /** 素材のフレーム画像と文章を Claude API に送ることに同意したか */
