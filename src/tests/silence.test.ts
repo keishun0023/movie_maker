@@ -91,8 +91,7 @@ test('低音量でも認識語があり雑音より大きければ削らない',
   assert.ok(soft, '小声区間は音量上は無音候補になる');
   const tok: Token = { id: 't1', text: 'はい', start: 1.55 * SR, end: 1.95 * SR, p: 0.8, seg: 0, timing: 'token' };
   const prot = protectBySpeech(cands, [tok], a);
-  const target = prot.find((c) => c.id === soft!.id)!;
-  assert.equal(target.protectedBySpeech, true);
+  assert.ok(prot.some((c) => c.protectedBySpeech && c.start <= 1.56 * SR && c.end >= 1.94 * SR), '小声の部分は守る');
   const cuts = decideCuts(prot, CUT_PRESETS.jumpcut.params, a.durationSamples);
   assert.ok(!cuts.some((c) => c.start < 1.95 * SR && c.end > 1.55 * SR));
 });
@@ -144,4 +143,36 @@ test('ほぼ無音(-85dB 程度)の間は、語の時刻がまたいでいても
   // 推定で付けた語の時刻が無音をまたいでいる
   const tok = { id: 't', text: 'だから', start: Math.round(1.2 * SRATE), end: Math.round(1.7 * SRATE), p: 0.9, seg: 0, timing: 'aligned' as const };
   assert.equal(protectBySpeech(cands, [tok], a)[0]!.protectedBySpeech, false);
+});
+
+test('発話保護は音がある所だけ。同じ間の残りの無音は詰める', () => {
+  // 0.2-1.0s 声 / 1.0-2.6s 間(1.7-1.8s にだけ小さな音) / 2.6-3.4s 声
+  const pcm = synth(4, [
+    [0.2, 1.0, 0.5],
+    [1.7, 1.8, 0.002],
+    [2.6, 3.4, 0.5],
+  ], 0.0003);
+  const a = computeAnalysis(pcm);
+  const cands = detectSilences(a);
+  const tok: Token = { id: 't1', text: 'え', start: 1.68 * SR, end: 1.82 * SR, p: 0.8, seg: 0, timing: 'token' };
+  const prot = protectBySpeech(cands, [tok], a);
+  const cuts = decideCuts(prot, CUT_PRESETS.jumpcut.params, a.durationSamples);
+  const tl = buildTimeline(a.durationSamples, cuts);
+  // 小さな音は残り、間の大部分(1.6秒→0.4秒未満)は詰まる
+  assert.ok(!cuts.some((c) => c.start < 1.8 * SR && c.end > 1.7 * SR), '小さな音は削らない');
+  const gap = (srcToOut(tl, 2.6 * SR) - srcToOut(tl, 1.0 * SR)) / SR;
+  assert.ok(gap < 0.4, `gap=${gap}`);
+});
+
+test('前の語の時刻が間に食い込んでいるだけなら、間を守らない', () => {
+  const pcm = synth(4, [
+    [0.2, 1.0, 0.5],
+    [1.0, 1.6, 0.002], // 間に息・雑音
+    [2.0, 2.8, 0.5],
+  ], 0.0003);
+  const a = computeAnalysis(pcm);
+  const cands = detectSilences(a);
+  // 語は 0.7-1.4s: 半分以上は前の声の中
+  const tok: Token = { id: 't1', text: 'ます', start: 0.7 * SR, end: 1.4 * SR, p: 0.8, seg: 0, timing: 'token' };
+  assert.ok(protectBySpeech(cands, [tok], a).every((c) => !c.protectedBySpeech));
 });

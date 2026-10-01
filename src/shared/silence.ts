@@ -158,31 +158,79 @@ function loudFraction(a: AnalysisData, s0: number, s1: number, minDb: number): n
 
 export function protectBySpeech(cands: SilenceCandidate[], tokens: Token[], a: AnalysisData, sensitivityDb = 0): SilenceCandidate[] {
   const st = levelStats(a, sensitivityDb);
+  const minDb = Math.max(st.floor + 10, -60);
+  const fs = a.frameSamples;
   // 語ごとの正確な時刻があるトークンだけで判断する。
   // 文字量から推定した時刻(Gemini の chunk)や区間単位の時刻では、無音の中に語があるように見えてしまうため使わない
   const usable = tokens.filter(
     (t) => (t.timing === 'token' || t.timing === 'dtw' || t.timing === 'aligned') && !t.flags?.includes('silence') && !t.flags?.includes('hallucination') && t.p >= 0.2 && t.text.trim() !== '',
   );
-  return cands.map((c) => {
-    let prot = false;
+  const out: SilenceCandidate[] = [];
+  for (const c of cands) {
+    // 発話の可能性がある所(保護する範囲)
+    const prot: { start: number; end: number }[] = [];
     for (const t of usable) {
       if (t.end <= c.start || t.start >= c.end) continue;
+      // 語の大部分がこの間の中にあるときだけ(前後の語の時刻が間に食い込んでいるだけのものは除く)
+      const inner = Math.min(t.end, c.end) - Math.max(t.start, c.start);
+      if (inner < (t.end - t.start) * 0.7) continue;
       const center = (t.start + t.end) / 2;
-      const inside = center > c.start + msToSamples(20) && center < c.end - msToSamples(20);
-      if (!inside) continue;
+      if (!(center > c.start + msToSamples(20) && center < c.end - msToSamples(20))) continue;
       // 雑音床より明らかに音がある所が続いているなら、小声の発話とみなして削らない。
       // 無音の端(前後の語の余韻)は除き、聞こえないほど小さい音(-60dB 未満)は発話とみなさない。
       // (無音が完全な 0 の音声では雑音床が -100dB になり、わずかな余韻でも「音がある」と判断されていた)
       const s0 = Math.max(c.start + msToSamples(30), t.start);
       const s1 = Math.min(c.end - msToSamples(30), t.end);
       if (s1 <= s0) continue;
-      if (loudFraction(a, s0, s1, Math.max(st.floor + 10, -60)) >= 0.3) {
-        prot = true;
-        break;
+      if (loudFraction(a, s0, s1, minDb) < 0.3) continue;
+      // 守るのは音がある所(と前後少し)だけ。残りの無音は詰める
+      const f0 = Math.floor(s0 / fs);
+      const f1 = Math.ceil(s1 / fs);
+      let lo = -1;
+      let hi = -1;
+      for (let f = f0; f < f1 && f < a.db.length; f++) {
+        if (a.db[f]! > minDb) {
+          if (lo < 0) lo = f;
+          hi = f;
+        }
       }
+      if (lo < 0) continue;
+      const pad = msToSamples(40);
+      prot.push({ start: Math.max(c.start, lo * fs - pad), end: Math.min(c.end, (hi + 1) * fs + pad) });
     }
-    return { ...c, protectedBySpeech: prot };
-  });
+    if (!prot.length) {
+      out.push({ ...c, protectedBySpeech: false });
+      continue;
+    }
+    // 間を「守る所」と「詰めてよい所」に分ける
+    prot.sort((x, y) => x.start - y.start);
+    const merged: { start: number; end: number }[] = [];
+    for (const r of prot) {
+      const last = merged[merged.length - 1];
+      if (last && r.start <= last.end) last.end = Math.max(last.end, r.end);
+      else merged.push({ ...r });
+    }
+    const minPiece = msToSamples(50);
+    let cur = c.start;
+    const pushPiece = (s0: number, s1: number, protectedBySpeech: boolean) => {
+      if (s1 <= s0) return;
+      // 短すぎる詰めてよい所は、守る所に含める
+      if (!protectedBySpeech && s1 - s0 < minPiece && !(s0 === c.start && c.start === 0) && !(s1 === c.end && c.end === a.durationSamples)) protectedBySpeech = true;
+      const last = out[out.length - 1];
+      if (last && last.end === s0 && last.protectedBySpeech && protectedBySpeech && last.id.startsWith(c.id)) {
+        last.end = s1;
+        return;
+      }
+      out.push({ id: s0 === c.start ? c.id : `${c.id}-${s0}`, start: s0, end: s1, protectedBySpeech });
+    };
+    for (const r of merged) {
+      pushPiece(cur, r.start, false);
+      pushPiece(Math.max(cur, r.start), r.end, true);
+      cur = Math.max(cur, r.end);
+    }
+    pushPiece(cur, c.end, false);
+  }
+  return out;
 }
 
 export interface CutDecision {
