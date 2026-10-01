@@ -123,3 +123,25 @@ test('文字量から推定した時刻(Gemini)の語では、無音を「発話
   const precise: Token = { ...est, timing: 'token' };
   assert.ok(protectBySpeech(cands, [precise], a).some((c) => c.protectedBySpeech));
 });
+
+test('ほぼ無音(-85dB 程度)の間は、語の時刻がまたいでいても「発話の可能性あり」で残さない', async () => {
+  const { computeAnalysis, detectSilences, protectBySpeech } = await import('../shared/silence.js');
+  const SRATE = 48000;
+  // 完全な無音 0.5秒(書き出し済み動画の頭などでよくある) → 声 0.8秒 → ほぼ無音 0.3秒 → 声 0.8秒
+  const n = Math.round(2.4 * SRATE);
+  const x = new Float32Array(n);
+  let seed = 1;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647) - 0.5;
+  for (let i = 0; i < n; i++) {
+    const t = i / SRATE;
+    if (t < 0.5) x[i] = 0;
+    else if (t < 1.3 || t >= 1.6) x[i] = 0.3 * Math.sin(i * 0.05);
+    else x[i] = rnd() * 0.0001; // 約 -85dB のかすかな雑音
+  }
+  const a = computeAnalysis(x);
+  const cands = detectSilences(a, 0, 50).filter((c) => c.start > 0.6 * SRATE);
+  assert.equal(cands.length, 1);
+  // 推定で付けた語の時刻が無音をまたいでいる
+  const tok = { id: 't', text: 'だから', start: Math.round(1.2 * SRATE), end: Math.round(1.7 * SRATE), p: 0.9, seg: 0, timing: 'aligned' as const };
+  assert.equal(protectBySpeech(cands, [tok], a)[0]!.protectedBySpeech, false);
+});

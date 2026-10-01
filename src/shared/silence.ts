@@ -146,6 +146,16 @@ export function flagTokens(tokens: Token[], a: AnalysisData, sensitivityDb = 0):
 }
 
 /** 認識トークンで発話がありそうな無音候補を保護する */
+/** 区間のうち、指定の音量を超えるフレームの割合 */
+function loudFraction(a: AnalysisData, s0: number, s1: number, minDb: number): number {
+  const f0 = Math.max(0, Math.floor(s0 / a.frameSamples));
+  const f1 = Math.min(a.db.length, Math.ceil(s1 / a.frameSamples));
+  if (f1 <= f0) return 0;
+  let n = 0;
+  for (let f = f0; f < f1; f++) if (a.db[f]! > minDb) n++;
+  return n / (f1 - f0);
+}
+
 export function protectBySpeech(cands: SilenceCandidate[], tokens: Token[], a: AnalysisData, sensitivityDb = 0): SilenceCandidate[] {
   const st = levelStats(a, sensitivityDb);
   // 語ごとの正確な時刻があるトークンだけで判断する。
@@ -160,9 +170,13 @@ export function protectBySpeech(cands: SilenceCandidate[], tokens: Token[], a: A
       const center = (t.start + t.end) / 2;
       const inside = center > c.start + msToSamples(20) && center < c.end - msToSamples(20);
       if (!inside) continue;
-      // 雑音床より明らかに音があるなら、小声の発話とみなして削らない
-      const lvl = meanDb(a, Math.max(c.start, t.start), Math.min(c.end, t.end));
-      if (lvl > st.floor + 8) {
+      // 雑音床より明らかに音がある所が続いているなら、小声の発話とみなして削らない。
+      // 無音の端(前後の語の余韻)は除き、聞こえないほど小さい音(-60dB 未満)は発話とみなさない。
+      // (無音が完全な 0 の音声では雑音床が -100dB になり、わずかな余韻でも「音がある」と判断されていた)
+      const s0 = Math.max(c.start + msToSamples(30), t.start);
+      const s1 = Math.min(c.end - msToSamples(30), t.end);
+      if (s1 <= s0) continue;
+      if (loudFraction(a, s0, s1, Math.max(st.floor + 10, -60)) >= 0.3) {
         prot = true;
         break;
       }
