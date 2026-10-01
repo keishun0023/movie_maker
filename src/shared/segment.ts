@@ -18,6 +18,8 @@ export interface SegmentOptions {
   introMaxSec?: number;
   /** これより短いテロップを強めに避ける(短く区切るモード用。未指定なら 4 文字の弱い目安) */
   minChars?: number;
+  /** 必ずテロップを区切る時刻(元音声のサンプル位置)。台本の表どおりにカットを割るときに使う */
+  breaksAt?: number[];
 }
 
 export const DEFAULT_SEGMENT_OPTIONS: SegmentOptions = {
@@ -109,9 +111,16 @@ export function splitIntoCaptionRanges(tokens: Token[], tl: Timeline | null, opt
   const prev: number[] = new Array(n + 1).fill(-1);
   cost[0] = 0;
   const MAX_TOKENS = 48;
+  // 必ず区切る位置(この番号のトークンの前で区切る)
+  const forced = new Set<number>();
+  for (const b of opt.breaksAt ?? []) {
+    const k = tokens.findIndex((t) => t.start >= b - 1);
+    if (k > 0) forced.add(k);
+  }
   for (let j = 1; j <= n; j++) {
     let chars = 0;
     for (let i = j - 1; i >= Math.max(0, j - MAX_TOKENS); i--) {
+      if (forced.has(i + 1) && i + 1 < j) break;
       chars += widths[i]!;
       if (chars > maxChars && i < j - 1) break;
       if (!isFinite(cost[i]!)) continue;
@@ -421,6 +430,23 @@ export function scenesPerCaption(captions: Caption[], tl: Timeline | null, srcSa
 }
 
 /** 2つのテロップの間のシーン境界(元音声の位置)。無音の中央に置く */
+/**
+ * 決まった切れ目(台本の表の行の切れ目)でカットを作る。切れ目はテロップの間に合わせる。
+ */
+export function scenesAtBreaks(captions: Caption[], breaks: number[], srcSamples: number): Scene[] {
+  const caps = [...captions].sort((a, b) => a.srcStart - b.srcStart);
+  const bounds = [0];
+  for (const b of breaks) {
+    const k = caps.findIndex((c) => c.srcStart >= b - 1);
+    const at = k > 0 ? sceneBoundary(caps[k - 1]!, caps[k]!) : b;
+    if (at > bounds[bounds.length - 1]! && at < srcSamples) bounds.push(at);
+  }
+  bounds.push(srcSamples);
+  const scenes: Scene[] = [];
+  for (let i = 0; i < bounds.length - 1; i++) scenes.push({ id: newId('scn'), srcStart: bounds[i]!, srcEnd: bounds[i + 1]!, bg: null, inset: null });
+  return scenes;
+}
+
 function sceneBoundary(a: Caption, b: Caption): number {
   if (b.srcStart <= a.srcEnd) return b.srcStart;
   return Math.round((a.srcEnd + b.srcStart) / 2);

@@ -37,7 +37,7 @@ function timedChars(tokens: Token[]): TimedChar[] {
 }
 
 /** 2つの文字列の対応(一致した文字の組)を求める。一致 +2 / 不一致 -1 / 飛ばし -1 */
-function alignPairs(a: string[], b: string[]): [number, number][] {
+export function alignPairs(a: string[], b: string[]): [number, number][] {
   const n = a.length;
   const m = b.length;
   const W = m + 1;

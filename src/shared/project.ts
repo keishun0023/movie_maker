@@ -1,5 +1,6 @@
 // プロジェクトの初期値と、解析結果からカット・テロップ・シーンを組み立てる処理。
 import { applyTextFixes } from './script.js';
+import { alignCutsToReference, parseReferenceTable, splitByReference, type ReferenceSplit } from './reference.js';
 import {
   SCHEMA_VERSION,
   SR,
@@ -14,7 +15,7 @@ import {
 } from './types.js';
 import { CUT_PRESETS, DEFAULT_CUT_PRESET, decideCuts, detectSilences, flagTokens, levelStats, protectBySpeech, removeRangesFromCuts } from './silence.js';
 import { buildTimeline, clampSpeed, identityTimeline, msToSamples, speedKeyOf, srcToOut } from './timemap.js';
-import { buildCaptions, buildScenes, carryOverScenes, DEFAULT_SEGMENT_OPTIONS, mergeCaptions, splitLongScenes, applyRhythm, scenesPerCaption, usableTokens, type SegmentOptions } from './segment.js';
+import { buildCaptions, buildScenes, carryOverScenes, DEFAULT_SEGMENT_OPTIONS, mergeCaptions, splitLongScenes, applyRhythm, scenesAtBreaks, scenesPerCaption, usableTokens, type SegmentOptions } from './segment.js';
 import { charsPerLineFor, DEFAULT_STYLE } from './captionRender.js';
 
 /** 初期値 'auto' は、実行時に API のモデル一覧から最新の flash モデルを選ぶ(モデル名は入れ替わるため) */
@@ -173,7 +174,10 @@ export function autoEdit(p: Project, a: AnalysisData, opt: AutoEditOptions = { k
   const tl = next.timeline;
   const dur = next.narration!.durationSamples;
   const tokens = next.transcript?.tokens ?? [];
-  let caps = snapCaptionsToSpeech(buildCaptions(tokens, tl, segmentOptionsFor(next)), a, next.cut.params.sensitivityDb);
+  // 台本の表どおりにカットを割るときは、表の行の切れ目でテロップも区切る
+  const ref = next.sceneLen.rhythm === 'reference' ? referenceSplitOf(next) : null;
+  const segOpt = ref ? { ...segmentOptionsFor(next), breaksAt: ref.breaks } : segmentOptionsFor(next);
+  let caps = snapCaptionsToSpeech(buildCaptions(tokens, tl, segOpt), a, next.cut.params.sensitivityDb);
   // 覚えておいた文字起こしの直しを当てはめる
   if (next.textFixes?.length) caps = caps.map((c) => (c.textEdited ? c : { ...c, text: applyTextFixes(c.text, next.textFixes) }));
   if (opt.keepManual) caps = mergeCaptions(p.captions, caps);
@@ -183,11 +187,46 @@ export function autoEdit(p: Project, a: AnalysisData, opt: AutoEditOptions = { k
     ? normalizeScenes(p.scenes, dur)
     : carryOverScenes(
         p.scenes,
-        next.sceneLen.rhythm === 'caption'
+        ref
+          ? scenesAtBreaks(caps, ref.breaks, dur)
+          : next.sceneLen.rhythm === 'caption'
           ? scenesPerCaption(caps, tl, dur, Math.max(0.6, next.sceneLen.minSec))
           : cutToLength({ ...next, captions: caps }, buildScenes(caps, tl, dur, segmentOptionsFor(next))),
       );
   return { ...next, captions: markCaptionReview(caps, tl), scenes };
+}
+
+/** 台本の表(素材の指定)の行の切れ目。表がない・文字起こしと合わないときは null */
+export function referenceSplitOf(p: Project): ReferenceSplit | null {
+  const text = p.aiAssign.reference ?? '';
+  const rows = parseReferenceTable(text);
+  if (!rows.length || !p.transcript) return null;
+  // 文字単位の対応づけは重いので、同じ文字起こし・同じ表なら使い回す
+  const tokens = p.transcript.tokens;
+  const hit = splitCache.get(tokens);
+  if (hit && hit.text === text) return hit.split;
+  const split = splitByReference(tokens, rows);
+  splitCache.set(tokens, { text, split });
+  return split;
+}
+const splitCache = new WeakMap<object, { text: string; split: ReferenceSplit | null }>();
+
+/**
+ * カットごとに、台本の表のどの行に当たるか(行の番号の配列。空なら対応なし)。
+ * 表どおりにカットを割っているときは切れ目から、そうでなければカットの文章の重なりから決める。
+ * texts はカット(scenes の順)の文章。
+ */
+export function referenceRowsForScenes(p: Project, scenes: Scene[], texts: string[]): number[][] {
+  const rows = parseReferenceTable(p.aiAssign.reference ?? '');
+  if (!rows.length) return scenes.map(() => []);
+  const split = p.sceneLen.rhythm === 'reference' ? referenceSplitOf(p) : null;
+  if (split) {
+    return scenes.map((sc) => {
+      const mid = (sc.srcStart + sc.srcEnd) / 2;
+      return split.rowsOf[split.breaks.filter((b) => b <= mid).length] ?? [];
+    });
+  }
+  return alignCutsToReference(texts, rows).map((r) => (r >= 0 ? [r] : []));
 }
 
 /** カット後に表示時間がなくなったテロップなどに確認の印を付ける */
@@ -235,6 +274,8 @@ function cutToLength(p: Project, scenes: Scene[]): Scene[] {
   const tl = timelineOf(p);
   const tokens = usableTokens(p.transcript?.tokens ?? []);
   const opt = segmentOptionsFor(p);
+  // 台本の表どおり: 表の1行を1カットにするので、長くても分けない
+  if (p.sceneLen.rhythm === 'reference') return scenes;
   if (p.sceneLen.rhythm === 'mix') return applyRhythm(scenes, tokens, tl, p.captions, opt);
   // テロップごとのカット割りでも、テロップのない長い区間(3秒超)は分ける
   if (p.sceneLen.rhythm === 'caption') return splitLongScenes(scenes, tokens, tl, { ...opt, sceneMaxSec: 3, introSec: 0 });

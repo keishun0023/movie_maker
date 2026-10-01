@@ -1,12 +1,12 @@
 // 右パネル: 手順ごとの設定(取り込み / 自動編集 / 確認して修正 / 書き出し)。
 import { SR, type Asset, type Caption, type CaptionStyle, type CutParams, type CutPresetId, type Motion, type MotionType, type Project, type Scene } from '../shared/types.js';
 import { CUT_PRESETS } from '../shared/silence.js';
-import { presetParams, splitScenesToCutLength, timelineOf } from '../shared/project.js';
+import { presetParams, referenceRowsForScenes, referenceSplitOf, splitScenesToCutLength, timelineOf } from '../shared/project.js';
 import { captionOutputTimings, sceneOutputRanges } from '../shared/segment.js';
 import { suggestFromScript } from '../shared/script.js';
 import { DEFAULT_STYLE, effectiveStyle } from '../shared/captionRender.js';
 import { MOTION_LABELS, motionOf } from '../shared/motion.js';
-import { alignCutsToReference, parseReferenceTable } from '../shared/reference.js';
+import { parseReferenceTable } from '../shared/reference.js';
 import { outToSrc, srcToOut } from '../shared/timemap.js';
 import { api, mediaUrl } from './api.js';
 import { button, checkbox, colorInput, field, fmtBytes, fmtSec, h, numInput, select, slider, toast } from './dom.js';
@@ -430,6 +430,42 @@ function alignBox(): HTMLElement | null {
   );
 }
 
+/** 台本の表(台本 / 素材)を貼り付ける欄。カット割りと素材の割り当ての両方で使う */
+function referenceInput(p: Project): HTMLElement {
+  const ta = h('textarea', {
+    rows: 6,
+    class: 'ref-input',
+    placeholder: 'スプレッドシートで「台本」と「素材」の2列を選んでコピーし、ここに貼り付けてください(セル内の改行もそのままで大丈夫です)',
+  });
+  ta.value = p.aiAssign.reference ?? '';
+  ta.addEventListener('input', () =>
+    store.commit((pp) => ({ ...pp, aiAssign: { ...pp.aiAssign, reference: ta.value } }), { coalesce: 'ai-reference', skip: 'right' }),
+  );
+  // 貼り付けたら、読み取り結果をすぐ表示する(表どおりのカット割りなら、その場で割り直す)
+  ta.addEventListener('change', () =>
+    setTimeout(() => {
+      if (store.p.sceneLen.rhythm === 'reference') reapplyLayout((pp) => pp);
+      else store.emit('right');
+    }, 0),
+  );
+  return ta;
+}
+
+/** 表どおりのカット割りの状態 */
+function referenceCutBox(p: Project): HTMLElement {
+  const rows = parseReferenceTable(p.aiAssign.reference ?? '');
+  const split = rows.length ? referenceSplitOf(p) : null;
+  const status = !rows.length
+    ? '台本の表を貼り付けてください。表の1行を1カットにします(テロップも行の切れ目で区切ります)。'
+    : !p.transcript
+      ? `${rows.length} 行を読み取りました。文字起こしの後、表の行の切れ目でカットを割ります。`
+      : !split
+        ? `${rows.length} 行を読み取りましたが、文字起こしと対応づけられませんでした(台本と話した内容が大きく違う可能性があります)。`
+        : `${rows.length} 行 → ${split.rowsOf.length} カットに割りました。` +
+          (split.rowsOf.some((r) => r.length > 1) ? ' 文字起こしに見つからなかった行は、前の行と同じカットにしています。' : '');
+  return h('div', { class: 'note' }, referenceInput(p), h('p', { class: 'hint' }, status));
+}
+
 /** 1カットの長さ・テロップの長さ */
 function sceneLenSection(p: Project): HTMLElement {
   const presets: [string, number, number][] = [
@@ -438,7 +474,8 @@ function sceneLenSection(p: Project): HTMLElement {
     ['2〜5秒(標準)', 2, 5],
   ];
   const perCap = p.sceneLen.rhythm === 'caption';
-  const cur = perCap || p.sceneLen.rhythm === 'mix' ? undefined : presets.find(([, a, b]) => a === p.sceneLen.minSec && b === p.sceneLen.maxSec);
+  const byTable = p.sceneLen.rhythm === 'reference';
+  const cur = perCap || byTable || p.sceneLen.rhythm === 'mix' ? undefined : presets.find(([, a, b]) => a === p.sceneLen.minSec && b === p.sceneLen.maxSec);
   const intro = (p.sceneLen.introSec ?? 0) > 0;
   // 押した時点でカット割り・テロップを作り直す(素材の割り当ては引き継ぐ)
   const setLen = (patch: Partial<Project['sceneLen']>) => reapplyLayout((pp) => ({ ...pp, sceneLen: { ...pp.sceneLen, ...patch } }));
@@ -452,9 +489,12 @@ function sceneLenSection(p: Project): HTMLElement {
         { class: 'seg-buttons' },
         h('button', { type: 'button', class: perCap ? 'on' : '', onclick: () => setLen({ minSec: 0.6, maxSec: 3, rhythm: 'caption', introSec: 0, introMaxSec: 0 }) }, 'テロップごと(おすすめ)'),
         presets.map(([label, a, b]) => h('button', { type: 'button', class: cur?.[1] === a && cur?.[2] === b ? 'on' : '', onclick: () => setLen({ minSec: a, maxSec: b, rhythm: 'even' }) }, label)),
+        h('button', { type: 'button', class: byTable ? 'on' : '', onclick: () => setLen({ rhythm: 'reference', introSec: 0, introMaxSec: 0 }) }, '台本の表どおり'),
       ),
     ),
-    perCap
+    byTable
+      ? referenceCutBox(p)
+      : perCap
       ? h('p', { class: 'hint' }, 'テロップ1つにつき1カットで背景を切り替えます。0.6秒未満の短いカットは隣とまとめます(細切れが続くと目が疲れるため)。')
       : checkbox(intro, '冒頭3秒はさらに細かく切る(1カット0.8秒以下)', (v) => setLen(v ? { introSec: 3, introMaxSec: 0.8 } : { introSec: 0, introMaxSec: 0 })),
     field(
@@ -544,27 +584,20 @@ function referenceBox(p: Project): HTMLElement {
   );
   if (!on) return box;
   const rows = parseReferenceTable(p.aiAssign.reference ?? '');
-  const ta = h('textarea', {
-    rows: 6,
-    class: 'ref-input',
-    placeholder: 'スプレッドシートで「台本」と「素材」の2列を選んでコピーし、ここに貼り付けてください(セル内の改行もそのままで大丈夫です)',
-  });
-  ta.value = p.aiAssign.reference ?? '';
-  ta.addEventListener('input', () => setA({ reference: ta.value }, 'ai-reference'));
-  // 貼り付けたら、読み取り結果をすぐ表示する
-  ta.addEventListener('change', () => setTimeout(() => store.emit('right'), 0));
+  const byTable = p.sceneLen.rhythm === 'reference';
+  const ta = byTable ? h('p', { class: 'hint' }, '表は「カット割り・テロップの長さ」で貼り付けたものを使います。') : referenceInput(p);
   // どのカットがどの行に当たるか
   const scenes = splitScenesToCutLength(p).scenes;
   const textOf = sceneTextOf({ ...p, scenes });
-  const idx = rows.length ? alignCutsToReference(scenes.map(textOf), rows) : [];
-  const perRow = rows.map((_, r) => idx.filter((x) => x === r).length);
+  const ofCut = rows.length ? referenceRowsForScenes(p, scenes, scenes.map(textOf)) : [];
+  const perRow = rows.map((_, r) => ofCut.filter((x) => x.includes(r)).length);
   box.append(
     ta,
     rows.length
       ? h(
           'div',
           null,
-          h('p', { class: 'hint' }, `${rows.length} 行を読み取りました。${idx.filter((x) => x >= 0).length} / ${scenes.length} カットが台本の行に対応しています。`),
+          h('p', { class: 'hint' }, `${rows.length} 行を読み取りました。${ofCut.filter((x) => x.length > 0).length} / ${scenes.length} カットが台本の行に対応しています。`),
           h(
             'table',
             { class: 'ref-table' },
@@ -572,6 +605,14 @@ function referenceBox(p: Project): HTMLElement {
             rows.map((r, i) => h('tr', { class: perRow[i] ? '' : 'none' }, h('td', null, r.line), h('td', null, r.hint || '—'), h('td', null, perRow[i] ? `${perRow[i]}` : '0'))),
           ),
           perRow.some((n) => n === 0) ? h('p', { class: 'hint' }, '「カット 0」の行は、文字起こしに見つからなかった行です(台本と話した内容が違う所など)。') : null,
+          byTable
+            ? null
+            : h(
+                'div',
+                null,
+                button('カット割りもこの表に合わせる', () => reapplyLayout((pp) => ({ ...pp, sceneLen: { ...pp.sceneLen, rhythm: 'reference', introSec: 0, introMaxSec: 0 } }))),
+                h('p', { class: 'hint' }, '表の1行を1カットにします(テロップも行の切れ目で区切ります)。'),
+              ),
         )
       : h('p', { class: 'hint' }, 'まだ読み取れる行がありません。'),
   );

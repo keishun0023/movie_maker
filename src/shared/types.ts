@@ -315,7 +315,7 @@ export interface Project {
     introSec?: number;
     introMaxSec?: number;
     /** caption: テロップ1つ=1カット / even: 長さの目安で均等 / mix: 速いカットと遅いカットを織り交ぜる */
-    rhythm?: 'even' | 'mix' | 'caption';
+    rhythm?: 'even' | 'mix' | 'caption' | 'reference';
   };
   /** 文字起こしの直し(「白球」→「白玉」など)。テロップを作り直すたびに当てはめ、認識のヒントにも使う */
   textFixes?: TextFix[];

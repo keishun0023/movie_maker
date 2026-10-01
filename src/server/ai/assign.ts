@@ -7,12 +7,12 @@ import path from 'node:path';
 import type Anthropic from '@anthropic-ai/sdk';
 import { SR, type Asset, type Project } from '../../shared/types.js';
 import { captionOutputTimings, sceneOutputRanges } from '../../shared/segment.js';
-import { timelineOf } from '../../shared/project.js';
+import { referenceRowsForScenes, timelineOf } from '../../shared/project.js';
 import { requireTool, runOk } from '../proc.js';
 import { CanceledError } from '../proc.js';
 import { sub } from '../store.js';
 import { gapFor, planAssignments, shotsFromCuts, type Shot } from './plan.js';
-import { alignCutsToReference, parseReferenceTable } from '../../shared/reference.js';
+import { parseReferenceTable } from '../../shared/reference.js';
 
 export const AI_MODEL = 'claude-opus-5-5';
 /** 1回のリクエストに入れる画像の上限 */
@@ -290,8 +290,8 @@ export async function aiAssign(opt: AssignOptions): Promise<{ assignments: Assig
   if (scenes.length === 0) throw new Error('シーンがありません。先に自動編集を行ってください。');
   // 素材の指定(参考): 台本の行ごとに指定された素材を、カットごとに添える
   const refRows = p.aiAssign.useReference && p.aiAssign.reference ? parseReferenceTable(p.aiAssign.reference) : [];
-  const refIdx = refRows.length ? alignCutsToReference(scenes.map((s) => s.text), refRows) : [];
-  const hintOf = (i: number) => (refIdx[i] !== undefined && refIdx[i]! >= 0 ? refRows[refIdx[i]!]!.hint : '');
+  const refOf = refRows.length ? referenceRowsForScenes(p, p.scenes, scenes.map((s) => s.text)) : [];
+  const hintOf = (i: number) => [...new Set((refOf[i] ?? []).map((r) => refRows[r]!.hint).filter(Boolean))].join(' / ');
 
   const cat = await buildCatalog(p, assets, signal, progress);
   const { default: AnthropicCls } = await import('@anthropic-ai/sdk').catch(() => {
@@ -424,7 +424,7 @@ export async function aiAssign(opt: AssignOptions): Promise<{ assignments: Assig
   });
   const distinct = new Set(plan.map((pl) => pl.shot.id)).size;
   const swapped = plan.filter((pl, i) => pl.shot.id !== byScene.get(scenes[i]!.index)?.[0]?.shot).length;
-  if (refRows.length) notes.push(`素材の指定(${refRows.length} 行)を参考に、${refIdx.filter((x) => x >= 0).length} カットに指定を添えて割り当てました。`);
+  if (refRows.length) notes.push(`素材の指定(${refRows.length} 行)を参考に、${refOf.filter((x) => x.length > 0).length} カットに指定を添えて割り当てました。`);
   notes.push(`${cat.shots.length} 個の場面から、${scenes.length} カットに ${distinct} 種類の場面を割り当てました。`);
   if (swapped > 0) notes.push(`${swapped} カットは、近くのカットと同じ場面にならないよう第2候補以降の場面にしました。`);
   if (missing > 0) notes.push(`${missing} カットは提案が返らなかったため、近くと重ならない場面を選びました。`);
