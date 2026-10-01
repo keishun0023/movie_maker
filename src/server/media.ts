@@ -335,16 +335,19 @@ export function renderEdited(source: Pcm16, tl: Timeline, gainDb = 0, padToSampl
   // 区間 i と i+1 の境目で重ねる長さ(出力サンプル、片側)
   const half: number[] = segs.map((seg, i) => {
     const next = segs[i + 1];
-    if (!xf || !next || next.srcStart <= seg.srcEnd) return 0;
+    if (!xf || !next || seg.gap || next.gap || next.srcStart <= seg.srcEnd) return 0;
     const gapOut = Math.floor((next.srcStart - seg.srcEnd) / 2 / Math.max(seg.speed ?? 1, next.speed ?? 1));
     return Math.max(0, Math.min(Math.floor(xf / 2), gapOut, Math.floor(outLen(i) / 2), Math.floor(outLen(i + 1) / 2)));
   });
   segs.forEach((seg, i) => {
+    // 足した間は無音のまま
+    if (seg.gap) return;
     const prev = segs[i - 1];
     const next = segs[i + 1];
     const speed = seg.speed ?? 1;
-    const cutBefore = prev ? prev.srcEnd < seg.srcStart : seg.srcStart > 0;
-    const cutAfter = next ? seg.srcEnd < next.srcStart : seg.srcEnd < tl.srcSamples;
+    // 足した間の前後も、ぷつっと鳴らないようにフェードする
+    const cutBefore = prev ? prev.gap || prev.srcEnd < seg.srcStart : seg.srcStart > 0;
+    const cutAfter = next ? next.gap || seg.srcEnd < next.srcStart : seg.srcEnd < tl.srcSamples;
     const hL = i > 0 ? half[i - 1]! : 0;
     const hR = half[i]!;
     // 重ねる分だけ前後に広げて取り出す

@@ -9,12 +9,13 @@ import {
   type CutParams,
   type CutPresetId,
   type Project,
+  type PauseInsert,
   type Scene,
   type SpeedRange,
   type Timeline,
 } from './types.js';
 import { CUT_PRESETS, DEFAULT_CUT_PRESET, decideCuts, detectSilences, flagTokens, levelStats, protectBySpeech, removeRangesFromCuts } from './silence.js';
-import { buildTimeline, clampSpeed, identityTimeline, msToSamples, speedKeyOf, srcToOut } from './timemap.js';
+import { buildTimeline, clampSpeed, identityTimeline, msToSamples, pauseKeyOf, speedKeyOf, srcToOut } from './timemap.js';
 import { buildCaptions, buildScenes, carryOverScenes, DEFAULT_SEGMENT_OPTIONS, mergeCaptions, splitLongScenes, applyRhythm, scenesAtBreaks, scenesPerCaption, usableTokens, type SegmentOptions } from './segment.js';
 import { charsPerLineFor, DEFAULT_STYLE } from './captionRender.js';
 
@@ -96,7 +97,7 @@ export function recomputeCut(p: Project, a: AnalysisData): Project {
   let cands = detectSilences(a, p.cut.params.sensitivityDb, 50);
   if (p.transcript && p.cut.protectSpeech !== false) cands = protectBySpeech(cands, p.transcript.tokens, a, p.cut.params.sensitivityDb);
   const cuts = decideCuts(cands, p.cut.params, dur, p.cut.keepRanges);
-  const timeline = buildTimeline(dur, removeRangesFromCuts(cuts, dur), p.cut.params.fadeMs, speedRangesOf(p.scenes), p.cut.params.overlapMs ?? 0);
+  const timeline = buildTimeline(dur, removeRangesFromCuts(cuts, dur), p.cut.params.fadeMs, speedRangesOf(p.scenes), p.cut.params.overlapMs ?? 0, pausesOf(p.scenes));
   return { ...p, silenceCandidates: cands, timeline };
 }
 
@@ -105,10 +106,15 @@ export function speedRangesOf(scenes: Scene[]): SpeedRange[] {
   return scenes.filter((s) => clampSpeed(s.speed) !== 1).map((s) => ({ start: s.srcStart, end: s.srcEnd, speed: clampSpeed(s.speed) }));
 }
 
+/** カットごとに「後に足す間」から、足す位置と長さを作る */
+export function pausesOf(scenes: Scene[]): PauseInsert[] {
+  return scenes.filter((s) => (s.pauseAfterMs ?? 0) > 0).map((s) => ({ at: s.srcEnd, samples: msToSamples(Math.min(5000, s.pauseAfterMs!)) }));
+}
+
 /** シーンの速さ・境界が対応表と食い違っていれば対応表を作り直す */
 export function ensureTimelineSpeeds(p: Project, a: AnalysisData): Project {
   if (!p.narration || !p.timeline) return p;
-  const want = speedKeyOf(speedRangesOf(p.scenes));
+  const want = speedKeyOf(speedRangesOf(p.scenes)) + pauseKeyOf(pausesOf(p.scenes));
   if ((p.timeline.speedKey ?? '') === want) return p;
   const next = recomputeCut(p, a);
   return { ...next, captions: markCaptionReview(next.captions, next.timeline) };

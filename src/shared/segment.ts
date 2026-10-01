@@ -504,6 +504,10 @@ export function carryOverScenes(oldScenes: Scene[], fresh: Scene[]): Scene[] {
   return fresh.map((s) => {
     const mid = (s.srcStart + s.srcEnd) / 2;
     const old = oldScenes.find((o) => o.srcStart <= mid && o.srcEnd > mid);
-    return old ? { ...s, bg: old.bg ? { ...old.bg } : null, inset: old.inset ? { ...old.inset } : null } : s;
+    const next: Scene = old ? { ...s, bg: old.bg ? { ...old.bg } : null, inset: old.inset ? { ...old.inset } : null } : { ...s };
+    // 足した間は、終わりの位置がほぼ同じカットに引き継ぐ
+    const paused = oldScenes.find((o) => (o.pauseAfterMs ?? 0) > 0 && Math.abs(o.srcEnd - s.srcEnd) < 0.3 * SR);
+    if (paused) next.pauseAfterMs = paused.pauseAfterMs;
+    return next;
   });
 }

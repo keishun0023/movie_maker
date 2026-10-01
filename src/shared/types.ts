@@ -141,6 +141,15 @@ export interface KeepSegment {
   outEnd: number;
   /** 話す速さ(1 = 等速)。出力の長さ = 元の長さ / speed */
   speed?: number;
+  /** 足した間(無音)。元音声は使わない(srcStart = srcEnd) */
+  gap?: boolean;
+}
+
+/** 元音声の位置 at の後に足す間(無音) */
+export interface PauseInsert {
+  at: number;
+  /** 足す長さ(サンプル) */
+  samples: number;
 }
 
 /** 元音声の範囲ごとの話す速さ(シーンの設定から作る) */
@@ -252,6 +261,8 @@ export interface Scene {
   boundaryEdited?: boolean;
   /** このシーンの話す速さ(0.5〜2.0、初期値 1)。音程は変えずに速さだけ変える */
   speed?: number;
+  /** このカットの後に足す間(ミリ秒)。テンポよく詰めた後でも、ここだけ間を空けたいとき */
+  pauseAfterMs?: number;
   /** AI が素材を提案したときの理由(表示用) */
   aiNote?: string;
   /** AI が挙げたほかの候補(「別の候補にする」で順に切り替える) */

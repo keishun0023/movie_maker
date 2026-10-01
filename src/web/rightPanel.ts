@@ -218,7 +218,7 @@ function autoView(player: Player): HTMLElement {
       ),
     ),
   );
-  const cutCount = tl ? tl.segments.length - 1 + (tl.segments[0]?.srcStart ? 1 : 0) : 0;
+  const cutCount = tl ? tl.segments.filter((x) => !x.gap).length - 1 + (tl.segments[0]?.srcStart ? 1 : 0) : 0;
   const summary = tl
     ? h('div', { class: 'ok-box' }, `元の長さ ${fmtSec(tl.srcSamples / SR)} → 編集後 ${fmtSec(tl.outSamples / SR)}(${cutCount}か所カット、${((1 - tl.outSamples / Math.max(1, tl.srcSamples)) * 100).toFixed(0)}%短縮)`)
     : h('p', { class: 'warn' }, '先に「1 素材を取り込む」でナレーションを設定してください。');
@@ -858,6 +858,7 @@ function sceneInspector(s: Scene, player: Player): HTMLElement {
       button('次と結合', () => mergeScene(s.id, 1), { disabled: idx === p.scenes.length - 1 }),
     ),
     speedSection(s),
+    pauseSection(s, player),
     section(
       '背景',
       field(
@@ -929,6 +930,34 @@ function motionSection(p: Project): HTMLElement {
     h('div', { class: 'row gap wrap' }, button('全カットにおまかせで動きを付ける', () => applyAutoMotions(), { class: 'primary' }), button('動きをすべて外す', () => clearMotions())),
     checkbox(p.motionAuto !== false, 'Claude で素材を割り当てたら、動きも自動で付ける', (v) => store.commit((pp) => ({ ...pp, motionAuto: v }))),
     h('p', { class: 'hint' }, 'カットごとの動きは「3 確認して修正」でカットを選ぶと変えられます。'),
+  );
+}
+
+/** このカットの後に足す間(テンポよく詰めた後でも、ここだけ間を空ける) */
+function pauseSection(s: Scene, player: Player): HTMLElement {
+  const ms = s.pauseAfterMs ?? 0;
+  const setPause = (v: number) => {
+    const n = Math.round(Math.max(0, Math.min(3000, v)) / 50) * 50;
+    store.commit((p) => ({ ...p, scenes: p.scenes.map((sc) => (sc.id === s.id ? { ...sc, pauseAfterMs: n || undefined } : sc)) }));
+  };
+  const label = h('span', { class: 'slider-value' }, `${(ms / 1000).toFixed(2)}秒`);
+  const range = h('input', { type: 'range', min: 0, max: 2000, step: 50, value: String(ms) });
+  range.addEventListener('input', () => (label.textContent = `${(Number(range.value) / 1000).toFixed(2)}秒`));
+  // 音声の作り直しが重いので、つまみを離したときに確定する
+  range.addEventListener('change', () => setPause(Number(range.value)));
+  const tl = timelineOf(store.p);
+  const idx = store.p.scenes.findIndex((x) => x.id === s.id);
+  const r = tl ? sceneOutputRanges(store.p.scenes, tl)[idx] : null;
+  return section(
+    'このカットの後の間',
+    h('div', { class: 'slider' }, range, label),
+    h(
+      'div',
+      { class: 'seg-buttons' },
+      [0, 0.2, 0.4, 0.7, 1].map((v) => h('button', { type: 'button', class: Math.abs(ms - v * 1000) < 1 ? 'on' : '', onclick: () => setPause(v * 1000) }, v === 0 ? 'なし' : `+${v}秒`)),
+    ),
+    r ? button('▶ つなぎ目を聞く', () => void player.play(Math.max(0, r.outEnd - 2 * SR), Math.min(tl!.outSamples, r.outEnd + 1.5 * SR)), { class: 'small' }) : null,
+    h('p', { class: 'hint' }, '無音で詰めた後に、このカットの終わりだけ間(無音)を足します。話の区切りや、見せたい映像の所で使ってください。背景の映像はそのまま流れます。'),
   );
 }
 

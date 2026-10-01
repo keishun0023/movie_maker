@@ -1,6 +1,6 @@
 // 元音声 → 編集後音声 の時間対応表。
 // すべて整数サンプル(48kHz)で計算し、表示用の丸め値は計算に使わない。
-import { SR, type KeepSegment, type SpeedRange, type Timeline } from './types.js';
+import { SR, type KeepSegment, type PauseInsert, type SpeedRange, type Timeline } from './types.js';
 
 export interface Range {
   start: number;
@@ -38,11 +38,17 @@ export function speedKeyOf(speeds: SpeedRange[]): string {
     .join(',');
 }
 
+/** 足す間を比較用の文字列にする */
+export function pauseKeyOf(pauses: PauseInsert[]): string {
+  const ps = pauses.filter((x) => x.samples > 0);
+  return ps.length ? '|' + ps.map((x) => `${Math.round(x.at)}+${Math.round(x.samples)}`).join(',') : '';
+}
+
 /**
  * 削除する範囲から保持区間の対応表を作る。
  * speeds を指定すると、その範囲の出力の長さを 元の長さ / speed にする(音程は変えずに速さを変える前提)。
  */
-export function buildTimeline(srcSamples: number, removeRanges: Range[], fadeMs = 0, speeds: SpeedRange[] = [], xfadeMs = 0): Timeline {
+export function buildTimeline(srcSamples: number, removeRanges: Range[], fadeMs = 0, speeds: SpeedRange[] = [], xfadeMs = 0, pauses: PauseInsert[] = []): Timeline {
   const total = Math.max(0, Math.round(srcSamples));
   const removes = normalizeRanges(removeRanges, 0, total);
   const sp = speeds
@@ -55,16 +61,52 @@ export function buildTimeline(srcSamples: number, removeRanges: Range[], fadeMs 
     cuts.add(r.start);
     cuts.add(r.end);
   }
+  // 足す間: 話している途中なら、その位置で区間を分けて間を入れる。削った所(無音)なら、その直前の保持区間の終わりに入れる
+  const keeps: Range[] = [];
+  {
+    let c = 0;
+    for (const r of removes) {
+      if (r.start > c) keeps.push({ start: c, end: r.start });
+      c = r.end;
+    }
+    if (total > c) keeps.push({ start: c, end: total });
+  }
+  const gaps = new Map<number, number>();
+  for (const pz of pauses) {
+    const len = Math.round(pz.samples);
+    if (!(len > 0) || keeps.length === 0) continue;
+    const x = Math.max(0, Math.min(total, Math.round(pz.at)));
+    const inside = keeps.find((k) => x > k.start && x < k.end);
+    let anchor: number;
+    if (inside) {
+      anchor = x;
+      cuts.add(x);
+    } else {
+      const before = keeps.filter((k) => k.end <= x);
+      anchor = before.length ? before[before.length - 1]!.end : keeps[0]!.start;
+    }
+    gaps.set(anchor, (gaps.get(anchor) ?? 0) + len);
+  }
   const segments: KeepSegment[] = [];
   let out = 0;
+  const pushGap = (at: number) => {
+    const len = gaps.get(at);
+    if (!len) return;
+    gaps.delete(at);
+    segments.push({ srcStart: at, srcEnd: at, outStart: out, outEnd: out + len, gap: true });
+    out += len;
+  };
   const pushOne = (a: number, b: number) => {
     if (b <= a) return;
+    // 先頭の保持区間より前に入れる間(冒頭)
+    if (segments.length === 0) pushGap(a);
     const speed = speedAt(a);
     const len = speed === 1 ? b - a : Math.max(1, Math.round((b - a) / speed));
     const seg: KeepSegment = { srcStart: a, srcEnd: b, outStart: out, outEnd: out + len };
     if (speed !== 1) seg.speed = speed;
     segments.push(seg);
     out += len;
+    pushGap(b);
   };
   // 速さの境目で保持区間を分ける
   const push = (a: number, b: number) => {
@@ -84,7 +126,7 @@ export function buildTimeline(srcSamples: number, removeRanges: Range[], fadeMs 
   push(cursor, total);
   const tl: Timeline = { segments, outSamples: out, srcSamples: total, fadeMs, hash: hashSegments(segments, fadeMs, xfadeMs) };
   if (xfadeMs > 0) tl.xfadeMs = xfadeMs;
-  const key = speedKeyOf(sp);
+  const key = speedKeyOf(sp) + pauseKeyOf(pauses);
   if (key) tl.speedKey = key;
   return tl;
 }
@@ -173,6 +215,7 @@ export function sourcePiecesForOutput(tl: Timeline, o0: number, o1: number): Kee
         srcEnd: seg.srcStart + outOffsetToSrc(seg, b - seg.outStart),
       };
       if (seg.speed) piece.speed = seg.speed;
+      if (seg.gap) piece.gap = true;
       pieces.push(piece);
     }
   }
@@ -201,6 +244,7 @@ export function hashSegments(segments: KeepSegment[], fadeMs: number, xfadeMs = 
   for (const s of segments) {
     feed(s.srcStart);
     feed(s.srcEnd);
+    if (s.gap) feed(-(s.outEnd - s.outStart));
     if (s.speed) feed(Math.round(s.speed * 1000));
   }
   return h1.toString(16).padStart(8, '0') + h2.toString(16).padStart(8, '0');
