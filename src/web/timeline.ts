@@ -274,7 +274,8 @@ export class TimelineView {
         const xb = x0Of(b);
         const ca = capById.get(a.id)!;
         const cb = capById.get(b.id)!;
-        const near = xb - xa < 4 || cb.srcStart - ca.srcEnd < 0.4 * SR;
+        // 編集後の画面で 0.4 秒未満しか離れていなければ(間を詰めた所も含む)続いているとみなす
+        const near = xb - xa < 4 || cb.srcStart - ca.srcEnd < 0.4 * SR || (src ? false : b.outStart - a.outEnd < 0.4 * SR);
         if (near && x > Math.min(xa, xb) - 6 && x < Math.max(xa, xb) + 6) return { kind: { type: 'cap-joint', a: a.id, b: b.id }, select: { kind: 'caption', id: x < (xa + xb) / 2 ? a.id : b.id } };
       }
       for (const c of caps) {
@@ -368,13 +369,19 @@ export class TimelineView {
       const k = sorted.findIndex((c) => c.id === d.id);
       const prevEnd = sorted[k - 1]?.srcEnd ?? 0;
       const nextStart = sorted[k + 1]?.srcStart ?? tl.srcSamples;
+      // 隣のテロップの端の近く(8px 以内)まで来たら、ぴったりくっつける
+      const xOfSrc = (v: number) => (src ? this.xOf(v) : this.xOf(srcToOut(tl, v)));
+      const px = src ? this.xOf(sAt) : this.xOf(t);
+      let snapped = sAt;
+      if (d.type === 'cap-end' && sorted[k + 1] && Math.abs(px - xOfSrc(nextStart)) < 8) snapped = nextStart;
+      if (d.type === 'cap-start' && sorted[k - 1] && Math.abs(px - xOfSrc(prevEnd)) < 8) snapped = prevEnd;
       store.commit(
         (pp) => ({
           ...pp,
           captions: pp.captions.map((c) => {
             if (c.id !== d.id) return c;
-            if (d.type === 'cap-start') return { ...c, srcStart: Math.max(prevEnd, Math.min(sAt, c.srcEnd - 0.1 * SR)), timingEdited: true };
-            return { ...c, srcEnd: Math.min(nextStart, Math.max(sAt, c.srcStart + 0.1 * SR)), timingEdited: true };
+            if (d.type === 'cap-start') return { ...c, srcStart: Math.max(prevEnd, Math.min(snapped, c.srcEnd - 0.1 * SR)), timingEdited: true };
+            return { ...c, srcEnd: Math.min(nextStart, Math.max(snapped, c.srcStart + 0.1 * SR)), timingEdited: true };
           }),
         }),
         { coalesce: 'cap-drag-' + d.id },

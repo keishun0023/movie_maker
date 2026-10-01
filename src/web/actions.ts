@@ -415,8 +415,8 @@ export function moveCaptionJoint(aId: string, bId: string, at: number) {
   const a = p.captions.find((c) => c.id === aId);
   const b = p.captions.find((c) => c.id === bId);
   if (!a || !b) return;
-  // 2つの間の隙間はそのままにして、つなぎ目(隙間の中心)を動かす。位置は語の切れ目に吸着させず自由に動かす
-  const gap = Math.max(0, b.srcStart - a.srcEnd);
+  // つなぎ目を動かすと2つはくっつく(隙間をなくす)。位置は語の切れ目に吸着させず自由に動かす
+  const gap = 0;
   const minLen = 0.15 * SR;
   const s = Math.round(Math.max(a.srcStart + minLen + gap / 2, Math.min(b.srcEnd - minLen - gap / 2, at)));
   let na: Caption = { ...a, srcEnd: Math.round(s - gap / 2), timingEdited: true };
