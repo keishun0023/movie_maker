@@ -158,7 +158,9 @@ function loudFraction(a: AnalysisData, s0: number, s1: number, minDb: number): n
 
 export function protectBySpeech(cands: SilenceCandidate[], tokens: Token[], a: AnalysisData, sensitivityDb = 0): SilenceCandidate[] {
   const st = levelStats(a, sensitivityDb);
-  const minDb = Math.max(st.floor + 10, -60);
+  // 小声の発話とみなす音量: 雑音床より 10dB 以上大きく、ふだんの声から 30dB 以内。
+  // (間に入る息・部屋の雑音は、ふだんの声より 30dB 以上小さいことが多いので含めない)
+  const minDb = Math.max(st.floor + 10, st.speech - 30, -60);
   const fs = a.frameSamples;
   // 語ごとの正確な時刻があるトークンだけで判断する。
   // 文字量から推定した時刻(Gemini の chunk)や区間単位の時刻では、無音の中に語があるように見えてしまうため使わない

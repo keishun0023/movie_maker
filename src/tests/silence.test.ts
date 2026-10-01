@@ -80,11 +80,12 @@ test('「この間は残す」を指定した無音は削らない', () => {
 
 test('低音量でも認識語があり雑音より大きければ削らない', () => {
   // 1.5-2.0s に小さな発話(しきい値未満だが雑音床より大きい)
+  // (雑音床 約 -59dB・ふだんの声 約 -23dB・小声 約 -47dB)
   const pcm = synth(4, [
-    [0.2, 1.0, 0.5],
-    [1.5, 2.0, 0.002],
-    [3.0, 3.5, 0.5],
-  ], 0.0003);
+    [0.2, 1.0, 0.1],
+    [1.5, 2.0, 0.006],
+    [3.0, 3.5, 0.1],
+  ], 0.002);
   const a = computeAnalysis(pcm);
   const cands = detectSilences(a);
   const soft = cands.find((c) => c.start <= 1.5 * SR && c.end >= 2.0 * SR);
@@ -111,10 +112,10 @@ test('完全な無音に出た認識語は幻覚の可能性として印を付�
 
 test('文字量から推定した時刻(Gemini)の語では、無音を「発話の可能性あり」として残さない', () => {
   const pcm = synth(4, [
-    [0.2, 1.0, 0.5],
-    [1.5, 2.0, 0.002], // 雑音より少し大きい音(息など)
-    [3.0, 3.5, 0.5],
-  ], 0.0003);
+    [0.2, 1.0, 0.1],
+    [1.5, 2.0, 0.006], // 小さな声
+    [3.0, 3.5, 0.1],
+  ], 0.002);
   const a = computeAnalysis(pcm);
   const cands = detectSilences(a);
   const est: Token = { id: 'g', text: 'です', start: 1.55 * SR, end: 1.95 * SR, p: 0.9, seg: 0, timing: 'chunk' };
@@ -148,10 +149,10 @@ test('ほぼ無音(-85dB 程度)の間は、語の時刻がまたいでいても
 test('発話保護は音がある所だけ。同じ間の残りの無音は詰める', () => {
   // 0.2-1.0s 声 / 1.0-2.6s 間(1.7-1.8s にだけ小さな音) / 2.6-3.4s 声
   const pcm = synth(4, [
-    [0.2, 1.0, 0.5],
-    [1.7, 1.8, 0.002],
-    [2.6, 3.4, 0.5],
-  ], 0.0003);
+    [0.2, 1.0, 0.1],
+    [1.7, 1.8, 0.006],
+    [2.6, 3.4, 0.1],
+  ], 0.002);
   const a = computeAnalysis(pcm);
   const cands = detectSilences(a);
   const tok: Token = { id: 't1', text: 'え', start: 1.68 * SR, end: 1.82 * SR, p: 0.8, seg: 0, timing: 'token' };
@@ -175,4 +176,24 @@ test('前の語の時刻が間に食い込んでいるだけなら、間を守�
   // 語は 0.7-1.4s: 半分以上は前の声の中
   const tok: Token = { id: 't1', text: 'ます', start: 0.7 * SR, end: 1.4 * SR, p: 0.8, seg: 0, timing: 'token' };
   assert.ok(protectBySpeech(cands, [tok], a).every((c) => !c.protectedBySpeech));
+});
+
+test('間の息・雑音(雑音床より少し大きい程度)は、語の時刻が重なっていても発話として守らない', () => {
+  // 声 → 0.3秒の間(息のような小さな音が続く) → 声。雑音床は約 -63dB、息は約 -50dB
+  const pcm = synth(3, [
+    [0.2, 1.4, 0.3],
+    [1.4, 1.7, 0.004],
+    [1.7, 2.8, 0.3],
+  ], 0.001);
+  const a = computeAnalysis(pcm);
+  const cands = detectSilences(a);
+  const gap = cands.find((c) => c.start <= 1.45 * SR && c.end >= 1.65 * SR);
+  assert.ok(gap, '息の間は無音候補になる');
+  // 認識の時刻がずれて、短い語が間の中に入っている
+  const tok: Token = { id: 't1', text: 'て', start: 1.47 * SR, end: 1.63 * SR, p: 0.8, seg: 0, timing: 'token' };
+  const prot = protectBySpeech(cands, [tok], a);
+  assert.ok(prot.every((c) => !c.protectedBySpeech));
+  const tl = buildTimeline(a.durationSamples, decideCuts(prot, CUT_PRESETS.jumpcut.params, a.durationSamples));
+  const left = (srcToOut(tl, 1.7 * SR) - srcToOut(tl, 1.4 * SR)) / SR;
+  assert.ok(left < 0.12, `left=${left}`);
 });
