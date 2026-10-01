@@ -63,3 +63,28 @@ test('カットの「後の間」は、そのカットの終わりに入り、�
   assert.equal(srcToOut(tl, sec(2)), sec(1.4));
   void timelineOf;
 });
+
+test('間を足した所では、被せ・カットで削っていた語尾を間の中へ延ばして自然に消す(語尾が途中で切れない)', () => {
+  const n = sec(3);
+  const data = new Int16Array(n * 2);
+  // 声は 1.04s まで続くが、カットは被せの設定で 1.00s から削っている
+  for (let i = 0; i < n; i++) {
+    const t = i / SR;
+    const v = t < 1.04 || t >= 1.96 ? Math.round(9000 * Math.sin((2 * Math.PI * 300 * i) / SR)) : 0;
+    data[i * 2] = v;
+    data[i * 2 + 1] = v;
+  }
+  const tl = buildTimeline(n, [{ start: sec(1), end: sec(2) }], 4, [], 80, [{ at: sec(1.5), samples: sec(0.5) }]);
+  const out = renderEdited({ sampleRate: SR, channels: 2, data }, tl);
+  const rms = (a: number, b: number) => {
+    let s = 0;
+    for (let i = sec(a); i < sec(b); i++) s += out.data[i * 2]! ** 2;
+    return Math.sqrt(s / (sec(b) - sec(a)));
+  };
+  // 削っていた語尾(出力 1.00〜1.03s)も鳴る
+  assert.ok(rms(1.0, 1.03) > 2000, `tail rms=${rms(1.0, 1.03)}`);
+  // その後は無音
+  assert.ok(rms(1.2, 1.4) < 1, `gap rms=${rms(1.2, 1.4)}`);
+  // カットの直前(0.99〜1.00s)で急に音が消えていない
+  assert.ok(rms(0.995, 1.0) > 3000);
+});

@@ -339,6 +339,22 @@ export function renderEdited(source: Pcm16, tl: Timeline, gainDb = 0, padToSampl
     const gapOut = Math.floor((next.srcStart - seg.srcEnd) / 2 / Math.max(seg.speed ?? 1, next.speed ?? 1));
     return Math.max(0, Math.min(Math.floor(xf / 2), gapOut, Math.floor(outLen(i) / 2), Math.floor(outLen(i + 1) / 2)));
   });
+  // 足した間の前後: 被せ・カットで削っていた声の終わり(始まり)を、間の中へ少し延ばして自然に消す
+  // (被せの設定では語尾を少し削ってから次の語と重ねるため、間を足すと語尾が途中で切れて聞こえる)
+  const extR: number[] = segs.map((seg, i) => {
+    const next = segs[i + 1];
+    if (seg.gap || !next?.gap || (seg.speed ?? 1) !== 1) return 0;
+    const removed = (segs[i + 2]?.srcStart ?? tl.srcSamples) - seg.srcEnd;
+    return Math.max(0, Math.min(removed, Math.round(0.15 * sr), next.outEnd - next.outStart));
+  });
+  const extL: number[] = segs.map((seg, i) => {
+    const prev = segs[i - 1];
+    if (seg.gap || !prev?.gap || (seg.speed ?? 1) !== 1) return 0;
+    const before = segs[i - 2];
+    const usedR = before ? extR[i - 2]! : 0;
+    const removed = seg.srcStart - (before?.srcEnd ?? 0) - usedR;
+    return Math.max(0, Math.min(removed, Math.round(0.06 * sr), prev.outEnd - prev.outStart - usedR));
+  });
   segs.forEach((seg, i) => {
     // 足した間は無音のまま
     if (seg.gap) return;
@@ -351,23 +367,28 @@ export function renderEdited(source: Pcm16, tl: Timeline, gainDb = 0, padToSampl
     const hL = i > 0 ? half[i - 1]! : 0;
     const hR = half[i]!;
     // 重ねる分だけ前後に広げて取り出す
-    const a = Math.max(0, Math.min(srcFrames, seg.srcStart - Math.round(hL * speed)));
-    const b = Math.max(a, Math.min(srcFrames, seg.srcEnd + Math.round(hR * speed)));
-    const want = outLen(i) + hL + hR;
+    const eL = extL[i]!;
+    const eR = extR[i]!;
+    const a = Math.max(0, Math.min(srcFrames, seg.srcStart - Math.round(hL * speed) - eL));
+    const b = Math.max(a, Math.min(srcFrames, seg.srcEnd + Math.round(hR * speed) + eR));
+    const want = outLen(i) + hL + hR + eL + eR;
     const raw = source.data.subarray(a * ch, b * ch);
     const piece = speed !== 1 || raw.length / ch !== want ? (speed !== 1 ? timeStretch(raw, ch, want) : raw) : raw;
     const len = Math.min(want, piece.length / ch);
-    const o0 = seg.outStart - hL;
+    const o0 = seg.outStart - hL - eL;
     const f = Math.min(fade, Math.floor(len / 2));
+    // 間へ延ばした所は、長めにフェードして消す(入る)
+    const fIn = eL > 0 ? Math.min(eL, Math.round(0.03 * sr)) : f;
+    const fOut = eR > 0 ? Math.min(eR, Math.round(0.08 * sr)) : f;
     for (let k = 0; k < len; k++) {
       const oi = o0 + k;
       if (oi < 0 || oi >= total) continue;
       let g = gain;
       if (hL > 0 && k < 2 * hL) g *= Math.sin(((k + 0.5) / (2 * hL)) * (Math.PI / 2));
-      else if (hL === 0 && cutBefore && f > 0 && k < f) g *= k / f;
+      else if (hL === 0 && cutBefore && fIn > 0 && k < fIn) g *= k / fIn;
       const fromEnd = len - 1 - k;
       if (hR > 0 && fromEnd < 2 * hR) g *= Math.sin(((fromEnd + 0.5) / (2 * hR)) * (Math.PI / 2));
-      else if (hR === 0 && cutAfter && f > 0 && fromEnd < f) g *= fromEnd / f;
+      else if (hR === 0 && cutAfter && fOut > 0 && fromEnd < fOut) g *= fromEnd / fOut;
       for (let c = 0; c < ch; c++) acc[oi * ch + c]! += piece[k * ch + c]! * g;
     }
   });
