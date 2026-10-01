@@ -114,37 +114,75 @@ export class Player {
       this.pendingLayer = null;
     }
     this.fit();
-    void this.refreshAudio(p);
+    this.refreshAudio(p);
     this.refreshBgm(p);
     this.render(this.currentTime());
   }
 
-  private async refreshAudio(p: Project) {
+  private audioTimer: ReturnType<typeof setTimeout> | null = null;
+  private audioTries = 0;
+  private audioLoading = false;
+
+  /** 編集後の音声を用意する。連続した変更はまとめ、失敗したら少し待って自動でやり直す */
+  private refreshAudio(p: Project, force = false) {
     if (!p.narration || !this.tl) {
       this.audioReady = false;
       return;
     }
     const hash = this.tl.hash + p.narration.sourceKey;
-    if (hash === this.audioHash) return;
+    if (hash === this.audioHash && !force) return;
     this.audioHash = hash;
     this.audioReady = false;
+    if (!force) this.audioTries = 0;
+    if (this.audioTimer) clearTimeout(this.audioTimer);
+    // 素早い操作が続いても、落ち着いてから1回だけ頼む
+    this.audioTimer = setTimeout(() => void this.loadAudio(hash), force ? 0 : 250);
+  }
+
+  private async loadAudio(hash: string) {
+    this.audioTimer = null;
+    const p = store.p;
+    const tl = this.tl;
+    if (!p.narration || !tl || hash !== this.audioHash) return;
     const t = this.currentTime();
     const wasPlaying = this.isPlaying();
+    this.audioLoading = true;
     try {
-      const { url } = await api.editedAudio(p.id, p.narration.sourceKey, this.tl);
+      const { url } = await api.editedAudio(p.id, p.narration.sourceKey, tl);
       if (hash !== this.audioHash) return;
-      this.narration.src = url;
-      await new Promise<void>((res) => {
-        const done = () => res();
-        this.narration.addEventListener('loadedmetadata', done, { once: true });
-        this.narration.addEventListener('error', done, { once: true });
+      await new Promise<void>((res, rej) => {
+        const timer = setTimeout(() => cleanup(new Error('音声の読み込みに時間がかかりすぎました')), 20000);
+        const ok = () => cleanup();
+        const ng = () => cleanup(new Error('音声ファイルを読み込めませんでした'));
+        const cleanup = (err?: Error) => {
+          clearTimeout(timer);
+          this.narration.removeEventListener('loadedmetadata', ok);
+          this.narration.removeEventListener('error', ng);
+          if (err) rej(err);
+          else res();
+        };
+        this.narration.addEventListener('loadedmetadata', ok);
+        this.narration.addEventListener('error', ng);
+        this.narration.src = url;
       });
-      this.narration.currentTime = Math.min(t, this.tl.outSamples) / SR;
+      if (hash !== this.audioHash) return;
+      this.narration.currentTime = Math.min(t, tl.outSamples) / SR;
       this.audioReady = true;
+      this.audioTries = 0;
       this.sourceAudio.src = `/api/projects/${p.id}/source-audio/${p.narration.sourceKey}`;
       if (wasPlaying) void this.play();
     } catch (e) {
-      toast('編集後の音声を作れませんでした: ' + (e as Error).message, 'error');
+      if (hash !== this.audioHash) return;
+      // 失敗したまま止まらないよう、少し待ってやり直す(1, 2, 4, 8秒)
+      this.audioTries++;
+      if (this.audioTries <= 4) {
+        console.warn('編集後の音声の準備に失敗。やり直します', e);
+        this.audioTimer = setTimeout(() => void this.loadAudio(hash), 1000 * 2 ** (this.audioTries - 1));
+      } else {
+        toast('編集後の音声を作れませんでした: ' + (e as Error).message + '(もう一度再生を押すとやり直します)', 'error');
+      }
+    } finally {
+      this.audioLoading = false;
     }
   }
 
@@ -184,7 +222,14 @@ export class Player {
   async play(from?: number, to?: number) {
     const p = store.p;
     if (!p.narration || !this.tl) return toast('先にナレーション音声を取り込んでください');
-    if (!this.audioReady) return toast('音声を準備中です。少し待ってから再生してください');
+    if (!this.audioReady) {
+      // 準備が止まっていたらやり直す
+      if (!this.audioLoading && !this.audioTimer) {
+        this.audioTries = 0;
+        this.refreshAudio(p, true);
+      }
+      return toast('音声を準備中です。少し待ってから再生してください');
+    }
     this.ensureAudioGraph();
     await this.ctx?.resume();
     this.mode = 'edited';

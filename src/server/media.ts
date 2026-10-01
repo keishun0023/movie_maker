@@ -396,9 +396,25 @@ export async function loadSourcePcm(projectId: string, key: string): Promise<Pcm
 
 export const editedWavPath = (projectId: string, hash: string) => sub(projectId, 'work', `edited-${hash}.wav`);
 
+const editedInFlight = new Map<string, Promise<string>>();
+
 export async function ensureEditedWav(projectId: string, key: string, tl: Timeline): Promise<string> {
   const file = editedWavPath(projectId, tl.hash + '-' + key.slice(0, 6));
-  if (fs.existsSync(file)) return file;
+  if (fs.existsSync(file)) {
+    // 使い回すときは更新日時を新しくして、掃除で消されないようにする(再生中の音声が消えるのを防ぐ)
+    const now = new Date();
+    await fsp.utimes(file, now, now).catch(() => undefined);
+    return file;
+  }
+  // 同じ音声を同時に頼まれたら、作るのは1回だけ
+  const running = editedInFlight.get(file);
+  if (running) return running;
+  const job = buildEditedWav(projectId, key, tl, file).finally(() => editedInFlight.delete(file));
+  editedInFlight.set(file, job);
+  return job;
+}
+
+async function buildEditedWav(projectId: string, key: string, tl: Timeline, file: string): Promise<string> {
   const src = await loadSourcePcm(projectId, key);
   await writeWav(file, renderEdited(src, tl));
   // 古い編集音声を掃除(最新20件だけ残す)
