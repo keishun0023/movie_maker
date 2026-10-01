@@ -182,3 +182,12 @@ a { color: var(--accent); }
 .media-error { position: absolute; left: 40px; right: 40px; top: 120px; font-size: 34px; color: #f2c14e; background: rgba(0,0,0,0.6); padding: 20px; border-radius: 12px; }
 .ai-assets { max-height: 180px; overflow-y: auto; border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; }
 .ai-assets .check { margin: 3px 0; }
+
+/* テロップ一覧 */
+.cap-list { display: flex; flex-direction: column; gap: 4px; max-height: 60vh; overflow-y: auto; }
+.cap-row { display: flex; align-items: flex-start; gap: 6px; padding: 3px 4px; border-radius: 6px; border: 1px solid transparent; }
+.cap-row.sel { border-color: var(--accent, #3b82f6); }
+.cap-row.review { background: rgba(250, 204, 21, 0.12); }
+.cap-time { flex: none; width: 3.2em; font-size: 12px; opacity: 0.7; padding-top: 6px; font-variant-numeric: tabular-nums; }
+.cap-list-text { flex: 1; min-width: 0; resize: vertical; font-size: 14px; }
+.fix-list { display: flex; flex-direction: column; gap: 4px; }

@@ -1,4 +1,5 @@
 // プロジェクトの初期値と、解析結果からカット・テロップ・シーンを組み立てる処理。
+import { applyTextFixes } from './script.js';
 import {
   SCHEMA_VERSION,
   SR,
@@ -173,6 +174,8 @@ export function autoEdit(p: Project, a: AnalysisData, opt: AutoEditOptions = { k
   const dur = next.narration!.durationSamples;
   const tokens = next.transcript?.tokens ?? [];
   let caps = snapCaptionsToSpeech(buildCaptions(tokens, tl, segmentOptionsFor(next)), a, next.cut.params.sensitivityDb);
+  // 覚えておいた文字起こしの直しを当てはめる
+  if (next.textFixes?.length) caps = caps.map((c) => (c.textEdited ? c : { ...c, text: applyTextFixes(c.text, next.textFixes) }));
   if (opt.keepManual) caps = mergeCaptions(p.captions, caps);
   // シーン境界を手で直している場合は境界を保持する。素材の割り当ては常に引き継ぐ
   const manualScenes = opt.keepManual && !opt.recut && p.scenes.length > 1 && p.scenes.some((s) => s.boundaryEdited);

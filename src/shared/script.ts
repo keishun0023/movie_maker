@@ -71,3 +71,25 @@ export function suggestFromScript(raw: string, script: string): { text: string; 
   best.text = best.text.replace(/^[、。，．,.]+|[、。，．,.]+$/g, '');
   return best;
 }
+
+/** 直しを文章に当てはめる(長い語から順に、すべての出現を置き換える) */
+export function applyTextFixes(text: string, fixes: { from: string; to: string }[] | undefined): string {
+  if (!fixes?.length) return text;
+  let out = text;
+  for (const f of [...fixes].filter((x) => x.from).sort((a, b) => b.from.length - a.from.length)) out = out.split(f.from).join(f.to);
+  return out;
+}
+
+/** 認識ヒント: 直した語を優先し、台本から抜き出した語を続ける */
+export function mergeHints(first: string[] | undefined, rest: string[], maxChars = 120): string[] {
+  const out: string[] = [];
+  let len = 0;
+  for (const t of [...(first ?? []), ...rest]) {
+    const k = t.trim();
+    if (k.length < 2 || out.includes(k)) continue;
+    if (len + k.length + 1 > maxChars) break;
+    out.push(k);
+    len += k.length + 1;
+  }
+  return out;
+}

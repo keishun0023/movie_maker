@@ -134,3 +134,10 @@ test('短く区切る: 「誰でも / 憧れの」のような細切れや、語
   assert.ok(out.includes('韓国でも'), out.join(' / '));
   assert.ok(!out.some((x) => /^(の|でも|は)/.test(x)), out.join(' / '));
 });
+
+test('文字起こしの直し: 長い語から置き換え、認識ヒントは直した語を優先する', async () => {
+  const { applyTextFixes, mergeHints } = await import('../shared/script.js');
+  assert.equal(applyTextFixes('白球ビタミンと白球', [{ from: '白球', to: '白玉' }, { from: '白球ビタミン', to: '白玉ビタミンC' }]), '白玉ビタミンCと白玉');
+  assert.equal(applyTextFixes('そのまま', undefined), 'そのまま');
+  assert.deepEqual(mergeHints(['白玉', 'ナノリポソーム'], ['白玉', '美容成分']), ['白玉', 'ナノリポソーム', '美容成分']);
+});

@@ -529,10 +529,11 @@ function editView(player: Player): HTMLElement {
     'div',
     { class: 'tabs' },
     h('button', { type: 'button', class: tab === 'selected' ? 'on' : '', onclick: () => store.setUi({ rightTab: 'selected' }) }, '選択中'),
+    h('button', { type: 'button', class: tab === 'list' ? 'on' : '', onclick: () => store.setUi({ rightTab: 'list' }) }, '一覧'),
     h('button', { type: 'button', class: tab === 'style' ? 'on' : '', onclick: () => store.setUi({ rightTab: 'style' }) }, 'テロップ共通'),
     h('button', { type: 'button', class: tab === 'audio' ? 'on' : '', onclick: () => store.setUi({ rightTab: 'audio' }) }, 'BGM・音量'),
   );
-  const body = tab === 'selected' ? selectedView(player) : tab === 'style' ? styleView() : audioView();
+  const body = tab === 'selected' ? selectedView(player) : tab === 'list' ? captionListView(player) : tab === 'style' ? styleView() : audioView();
   return h('div', { class: 'panel-body' }, tabs, body, button('次へ: 動画を書き出す →', () => store.setUi({ step: 4 }), { class: 'next' }));
 }
 
@@ -793,6 +794,98 @@ function fontSelect(value: string, onChange: (v: string) => void): HTMLElement {
     void ensureFont(v);
     onChange(v);
   }, { class: 'font-select' }), '日本語のあるフォントが上に表示されます。TTF/OTFを素材として取り込むとプロジェクト用フォントになります');
+}
+
+// 置き換え欄の入力は画面を作り直しても残す
+const replaceState = { from: '', to: '', remember: true };
+
+/** テロップ一覧: 全テロップをまとめて確認・修正する。まとめて置き換えと、直しの記憶 */
+function captionListView(player: Player): HTMLElement {
+  const p = store.p;
+  const tl = timelineOf(p);
+  const timings = tl ? captionOutputTimings(p.captions, tl) : [];
+  const byId = new Map(p.captions.map((c) => [c.id, c]));
+  const fixes = p.textFixes ?? [];
+  const count = (from: string) => (from ? p.captions.reduce((n, c) => n + (c.text.split(from).length - 1), 0) : 0);
+
+  const fromIn = h('input', { type: 'text', placeholder: '間違い(例: 白球)', value: replaceState.from });
+  const toIn = h('input', { type: 'text', placeholder: '正しい表記(例: 白玉)', value: replaceState.to });
+  const hits = h('span', { class: 'hint' }, replaceState.from ? `${count(replaceState.from)} か所` : '');
+  fromIn.addEventListener('input', () => {
+    replaceState.from = fromIn.value;
+    hits.textContent = fromIn.value ? `${count(fromIn.value)} か所` : '';
+  });
+  toIn.addEventListener('input', () => (replaceState.to = toIn.value));
+  const doReplace = () => {
+    const from = replaceState.from;
+    const to = replaceState.to;
+    if (!from) return toast('置き換える文字を入れてください', 'error');
+    const n = count(from);
+    store.commit((pp) => ({
+      ...pp,
+      // 覚える場合は、作り直しのたびに辞書で直すので「手で直した」印は付けない(カットの作り直しにも追従させる)
+      captions: pp.captions.map((c) => (c.text.includes(from) ? { ...c, text: c.text.split(from).join(to), textEdited: replaceState.remember ? c.textEdited : true } : c)),
+      textFixes: replaceState.remember ? [...(pp.textFixes ?? []).filter((f) => f.from !== from), { from, to }] : pp.textFixes,
+    }));
+    toast(`${n} か所を置き換えました${replaceState.remember ? '(次からの文字起こし・作り直しでも自動で直します)' : ''}`, 'ok');
+    replaceState.from = '';
+    replaceState.to = '';
+  };
+
+  const rows = timings
+    .map((t) => byId.get(t.id))
+    .filter((c): c is Caption => !!c)
+    .map((c) => {
+      const t = timings.find((x) => x.id === c.id)!;
+      const ta = h('textarea', { rows: c.text.includes('\n') ? 2 : 1, class: 'cap-list-text' });
+      ta.value = c.text;
+      ta.addEventListener('input', () => updateCaption(c.id, (cc) => ({ ...cc, text: ta.value, textEdited: true }), `cap-text-${c.id}`));
+      ta.addEventListener('focus', () => {
+        player.seek(t.outStart);
+        store.setUi({ selection: { kind: 'caption', id: c.id } }, 'seek');
+      });
+      return h(
+        'div',
+        { class: 'cap-row' + (c.review ? ' review' : '') + (store.state.ui.selection?.id === c.id ? ' sel' : ''), title: c.review ? '要確認: ' + c.review : '' },
+        h('span', { class: 'cap-time' }, fmtSec(t.outStart / SR, 1)),
+        ta,
+        button('▶', () => void player.play(Math.max(0, t.outStart - 0.2 * SR), t.outEnd + 0.2 * SR), { class: 'small', title: 'この部分を再生' }),
+      );
+    });
+
+  return h(
+    'div',
+    null,
+    section(
+      'まとめて置き換え',
+      h('p', { class: 'hint' }, '同じ間違いが何か所もあるときに、全テロップをまとめて直します。'),
+      h('div', { class: 'row gap' }, fromIn, h('span', null, '→'), toIn),
+      h('div', { class: 'row gap' }, hits, button('すべて置き換え', doReplace, { class: 'primary' })),
+      checkbox(replaceState.remember, 'この直しを覚える(カットの作り直しや、次の文字起こしでも自動で直し、認識のヒントにも使う)', (v) => (replaceState.remember = v)),
+      fixes.length
+        ? field(
+            '覚えている直し',
+            h(
+              'div',
+              { class: 'fix-list' },
+              fixes.map((f) =>
+                h(
+                  'div',
+                  { class: 'row gap' },
+                  h('span', null, `${f.from} → ${f.to}`),
+                  button('削除', () => store.commit((pp) => ({ ...pp, textFixes: (pp.textFixes ?? []).filter((x) => x.from !== f.from) })), { class: 'small' }),
+                ),
+              ),
+            ),
+          )
+        : null,
+    ),
+    section(
+      `テロップ一覧(${rows.length})`,
+      h('p', { class: 'hint' }, '文字をクリックするとその場所に移動します。そのまま書き換えられます(Enter で改行=2行表示)。黄色は認識が怪しい所です。'),
+      rows.length ? h('div', { class: 'cap-list' }, rows) : h('p', { class: 'hint' }, 'まだテロップがありません。「2 自動編集」で文字起こしをしてください。'),
+    ),
+  );
 }
 
 function styleView(): HTMLElement {

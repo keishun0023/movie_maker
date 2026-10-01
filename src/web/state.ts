@@ -4,7 +4,7 @@ import { api, type SystemResp } from './api.js';
 
 export type Selection = { kind: 'scene' | 'caption'; id: string } | null;
 export type Step = 1 | 2 | 3 | 4;
-export type RightTab = 'selected' | 'style' | 'audio';
+export type RightTab = 'selected' | 'list' | 'style' | 'audio';
 
 export interface UiState {
   step: Step;

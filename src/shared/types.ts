@@ -315,6 +315,8 @@ export interface Project {
     /** caption: テロップ1つ=1カット / even: 長さの目安で均等 / mix: 速いカットと遅いカットを織り交ぜる */
     rhythm?: 'even' | 'mix' | 'caption';
   };
+  /** 文字起こしの直し(「白球」→「白玉」など)。テロップを作り直すたびに当てはめ、認識のヒントにも使う */
+  textFixes?: TextFix[];
   /** テロップの長さ: normal(2行まで) / short(1行・短く区切る) */
   captionLen?: 'normal' | 'short';
   /** 素材を割り当てたときに、おまかせで動きも付ける(初期値 true) */
@@ -338,6 +340,11 @@ export interface Project {
     /** このプロジェクトの音声を Gemini に送ることに利用者が同意したか */
     cloudConsent: boolean;
   };
+}
+
+export interface TextFix {
+  from: string;
+  to: string;
 }
 
 export interface StylePreset {

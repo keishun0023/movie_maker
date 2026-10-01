@@ -242,6 +242,7 @@ export async function runAutoEdit(opts: { basis?: 'source' | 'edited' } = {}) {
       dtw: p.asr.dtw,
       script: p.script,
       useHints: p.useScriptHints,
+      extraHints: (p.textFixes ?? []).map((f) => f.to),
       basis: opts.basis ?? 'source',
       ...(opts.basis === 'edited' && p.timeline ? { timeline: p.timeline } : {}),
     });

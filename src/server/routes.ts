@@ -9,7 +9,7 @@ import { geminiTranscribe, listGeminiModels, resolveGeminiModel } from './asr/ge
 import { anthropicKey, anthropicKeySource, geminiKey, geminiKeySource, setAnthropicKey, setGeminiKey } from './secrets.js';
 import { aiAssign } from './ai/assign.js';
 import { outToSrc } from '../shared/timemap.js';
-import { hintTerms } from '../shared/script.js';
+import { hintTerms, mergeHints } from '../shared/script.js';
 import { buildPreview, importUpload, removeAssetFiles } from './assets.js';
 import { WhisperCppAdapter } from './asr/whisperCpp.js';
 import { PRESETS_FILE } from './config.js';
@@ -318,6 +318,8 @@ type TranscribeBody = {
   dtw: boolean;
   script?: string;
   useHints?: boolean;
+  /** 利用者が直した語(認識のヒントにする) */
+  extraHints?: string[];
   basis?: 'source' | 'edited';
   timeline?: Timeline;
 };
@@ -333,7 +335,7 @@ async function transcribeWithGemini(id: string, body: TranscribeBody): Promise<J
   } catch (e) {
     throw new HttpError(400, e instanceof Error ? e.message : String(e));
   }
-  const hints = body.useHints && body.script ? hintTerms(body.script) : [];
+  const hints = mergeHints(body.extraHints, body.useHints && body.script ? hintTerms(body.script) : []);
   const sens = Number(body.sensitivityDb ?? 0) || 0;
   const cacheKey = crypto.createHash('sha1').update(JSON.stringify(['gemini', key, model, hints, sens, 1])).digest('hex').slice(0, 20);
   const cacheFile = sub(id, 'cache', `asr-${cacheKey}.json`);
@@ -444,7 +446,7 @@ router.post('/api/projects/:id/transcribe', async (req, res) => {
   if (!def) throw new HttpError(400, 'モデルが正しくありません');
   if (!isInstalled(def)) throw new HttpError(409, `モデル「${def.label}」がまだ導入されていません。先にダウンロードしてください。`);
   if (!asr.available()) requireTool('whisper');
-  const hints = body.useHints && body.script ? hintTerms(body.script) : [];
+  const hints = mergeHints(body.extraHints, body.useHints && body.script ? hintTerms(body.script) : []);
   const prompt = hints.length ? hints.join('、') : undefined;
   const basis = body.basis === 'edited' && body.timeline ? 'edited' : 'source';
   const tl = basis === 'edited' ? body.timeline! : null;
