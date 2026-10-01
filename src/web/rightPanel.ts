@@ -872,26 +872,35 @@ function sceneInspector(s: Scene, player: Player): HTMLElement {
       bgFields,
     ),
     section(
-      '差し込み画像(1枚)',
+      '映像の上に重ねる画像',
       field(
         '画像',
-        select(inset?.assetId ?? '', [['', '(なし)'], ...images.map((a) => [a.id, a.name] as [string, string])], (v) =>
-          up((sc) => ({ ...sc, inset: v ? { assetId: v, x: 0.5, y: 0.7, width: 0.45, startSec: 0, endSec: null } : null })),
-        ),
+        select(inset?.assetId ?? '', [['', '(なし)'], ...images.map((a) => [a.id, a.name] as [string, string])], (v) => {
+          if (v) void import('./actions.js').then(({ placeOverlay }) => placeOverlay(s.id, v));
+          else up((sc) => ({ ...sc, inset: null }));
+        }),
+        '左の画像をプレビュー画面にドラッグしても重ねられます(商品画像・成分の説明など)',
       ),
       inset
         ? h(
             'div',
             null,
-            field('横位置(中心)', slider(inset.x, { min: 0, max: 1, step: 0.01, format: (v) => `${Math.round(v * 100)}%`, onChange: (v) => setInset({ x: v }, 'ix') })),
-            field('縦位置(中心)', slider(inset.y, { min: 0, max: 1, step: 0.01, format: (v) => `${Math.round(v * 100)}%`, onChange: (v) => setInset({ y: v }, 'iy') })),
-            field('幅', slider(inset.width, { min: 0.1, max: 1, step: 0.01, format: (v) => `${Math.round(v * 100)}%`, onChange: (v) => setInset({ width: v }, 'iw') })),
-            field('表示開始(シーン内の秒)', numInput(inset.startSec, { min: 0, max: dur, step: 0.1, onChange: (v) => setInset({ startSec: v }) })),
-            field('表示終了(空欄=最後まで)', (() => {
-              const el = h('input', { type: 'number', step: 0.1, min: 0, value: inset.endSec == null ? '' : String(inset.endSec) });
-              el.addEventListener('change', () => setInset({ endSec: el.value === '' ? null : Math.max(0, Number(el.value)) }));
-              return el;
-            })()),
+            h('p', { class: 'hint' }, 'プレビューの画像をドラッグで移動、ホイール(2本指スクロール)で大きさを変えられます。'),
+            button('重ねる画像を外す', () => up((sc) => ({ ...sc, inset: null }))),
+            h(
+              'details',
+              null,
+              h('summary', null, '細かく調整'),
+              field('横位置(中心)', slider(inset.x, { min: 0, max: 1, step: 0.01, format: (v) => `${Math.round(v * 100)}%`, onChange: (v) => setInset({ x: v }, 'ix') })),
+              field('縦位置(中心)', slider(inset.y, { min: 0, max: 1, step: 0.01, format: (v) => `${Math.round(v * 100)}%`, onChange: (v) => setInset({ y: v }, 'iy') })),
+              field('幅', slider(inset.width, { min: 0.1, max: 1, step: 0.01, format: (v) => `${Math.round(v * 100)}%`, onChange: (v) => setInset({ width: v }, 'iw') })),
+              field('表示開始(カット内の秒)', numInput(inset.startSec, { min: 0, max: dur, step: 0.1, onChange: (v) => setInset({ startSec: v }) })),
+              field('表示終了(空欄=最後まで)', (() => {
+                const el = h('input', { type: 'number', step: 0.1, min: 0, value: inset.endSec == null ? '' : String(inset.endSec) });
+                el.addEventListener('change', () => setInset({ endSec: el.value === '' ? null : Math.max(0, Number(el.value)) }));
+                return el;
+              })()),
+            ),
           )
         : null,
     ),

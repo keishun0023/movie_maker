@@ -215,3 +215,4 @@ a { color: var(--accent); }
 .ref-table th, .ref-table td { border-bottom: 1px solid rgba(255,255,255,0.08); padding: 3px 4px; text-align: left; vertical-align: top; }
 .ref-table td:last-child, .ref-table th:last-child { text-align: right; width: 3em; }
 .ref-table tr.none td { opacity: 0.5; }
+.stage-wrap.drop .stage { outline: 3px dashed var(--ok); outline-offset: 2px; }

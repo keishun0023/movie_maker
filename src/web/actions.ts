@@ -129,6 +129,28 @@ export function defaultBg(asset: Asset, p: Project): BgPlacement {
   };
 }
 
+/**
+ * 画像をカットの映像の上に重ねる(商品画像・成分の説明など)。
+ * 置く位置(画面上の比 0..1)を指定しなければ、テロップと重なりにくい少し上に置く。大きさは画面に収まるように決める。
+ */
+export function placeOverlay(sceneId: string, assetId: string, at?: { x: number; y: number }) {
+  const p = store.p;
+  const asset = p.assets.find((a) => a.id === assetId);
+  if (!asset || asset.kind !== 'image') return toast('映像の上に重ねられるのは画像です');
+  const W = p.export.width;
+  const H = p.export.height;
+  const aw = asset.width ?? 1;
+  const ah = asset.height ?? 1;
+  // 横は画面の85%まで、縦は画面の55%まで
+  const width = Math.round(Math.min(0.85, (0.55 * H * aw) / ah / W) * 1000) / 1000;
+  const hRatio = (width * W * ah) / aw / H;
+  const clamp = (v: number, half: number) => Math.round(Math.max(half, Math.min(1 - half, v)) * 1000) / 1000;
+  const x = clamp(at?.x ?? 0.5, width / 2);
+  const y = clamp(at?.y ?? 0.42, hRatio / 2);
+  store.commit((pp) => ({ ...pp, scenes: pp.scenes.map((s) => (s.id === sceneId ? { ...s, inset: { assetId, x, y, width, startSec: 0, endSec: null } } : s)) }));
+  store.setUi({ selection: { kind: 'scene', id: sceneId }, rightTab: 'selected' }, 'select');
+}
+
 export function assignBg(sceneId: string, assetId: string) {
   const asset = store.p.assets.find((a) => a.id === assetId);
   if (!asset || (asset.kind !== 'image' && asset.kind !== 'video')) return toast('背景には画像か動画を割り当ててください');

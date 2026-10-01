@@ -10,6 +10,7 @@ import { api, mediaUrl } from './api.js';
 import { h, toast } from './dom.js';
 import { fontState, renderFontFor } from './fonts.js';
 import { store } from './state.js';
+import { assignBg, placeOverlay } from './actions.js';
 
 const dbToLin = (db: number) => Math.pow(10, db / 20);
 
@@ -56,6 +57,8 @@ export class Player {
   private mode: 'edited' | 'source' = 'edited';
   private drag: { startX: number; startY: number; dx: number; dy: number; capId: string; only: boolean } | null = null;
   /** 背景のドラッグ(位置の調整)。ox/oy は動かしている途中の位置 */
+  /** 重ねた画像のドラッグ(動かす) */
+  private insetDrag: { startX: number; startY: number; sceneId: string; x0: number; y0: number; x: number; y: number } | null = null;
   private bgDrag: { startX: number; startY: number; sceneId: string; ox0: number; oy0: number; spanX: number; spanY: number; ox: number; oy: number } | null = null;
   scale = 0.3;
   onTick: ((t: number) => void) | null = null;
@@ -75,6 +78,25 @@ export class Player {
     this.narration.addEventListener('ended', () => this.pause());
     this.guideCanvas.addEventListener('pointerdown', (e) => this.onPointerDown(e));
     this.guideCanvas.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
+    // 素材一覧から画面にドロップ: 画像は映像の上に重ねる、動画はそのカットの背景にする
+    this.root.addEventListener('dragover', (e) => {
+      if (!e.dataTransfer?.types.includes('text/x-tdm-asset')) return;
+      e.preventDefault();
+      this.root.classList.add('drop');
+    });
+    this.root.addEventListener('dragleave', () => this.root.classList.remove('drop'));
+    this.root.addEventListener('drop', (e) => {
+      this.root.classList.remove('drop');
+      const id = e.dataTransfer?.getData('text/x-tdm-asset');
+      if (!id) return;
+      e.preventDefault();
+      const sr = this.sceneAt(this.currentTime());
+      if (!sr) return toast('先に自動編集でカットを作ってください');
+      const asset = store.p.assets.find((a) => a.id === id);
+      if (asset?.kind === 'video') return assignBg(sr.id, id);
+      const r = this.guideCanvas.getBoundingClientRect();
+      placeOverlay(sr.id, id, { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height });
+    });
     window.addEventListener('pointermove', (e) => this.onPointerMove(e));
     window.addEventListener('pointerup', () => this.onPointerUp());
     new ResizeObserver(() => this.fit()).observe(this.root);
@@ -333,6 +355,10 @@ export class Player {
     return JSON.stringify([scene.id, bg, scene.inset, scene.speed ?? 1, p.export.width, p.export.height]);
   }
 
+  private sceneAt(t: number) {
+    return this.sceneRanges.find((s) => t >= s.outStart && t < s.outEnd) ?? this.sceneRanges[this.sceneRanges.length - 1];
+  }
+
   /** 指定時刻の画面を描く */
   render(t: number) {
     const p = store.p;
@@ -358,7 +384,8 @@ export class Player {
     if (inset && insetAsset?.width && insetAsset.height && sr) {
       const rel = (t - sr.outStart) / SR;
       const visible = rel >= inset.startSec && (inset.endSec == null || rel < inset.endSec);
-      const pl = placeInset(insetAsset.width, insetAsset.height, W, H, inset);
+      const d = this.insetDrag && this.insetDrag.sceneId === scene!.id ? { x: this.insetDrag.x, y: this.insetDrag.y } : {};
+      const pl = placeInset(insetAsset.width, insetAsset.height, W, H, { ...inset, ...d });
       const url = mediaUrl(p.id, insetAsset.id, 'preview');
       if (!this.insetImg.src.endsWith(url)) this.insetImg.src = url;
       Object.assign(this.insetImg.style, { left: `${pl.x}px`, top: `${pl.y}px`, width: `${pl.w}px`, height: `${pl.h}px`, display: visible ? 'block' : 'none' });
@@ -579,6 +606,16 @@ export class Player {
       e.preventDefault();
       return;
     }
+    // 重ねた画像はドラッグで動かせる
+    const it = this.editableInset();
+    if (it && pt.x >= it.pl.x && pt.x <= it.pl.x + it.pl.w && pt.y >= it.pl.y && pt.y <= it.pl.y + it.pl.h) {
+      const ins = it.scene.inset!;
+      this.insetDrag = { startX: pt.x, startY: pt.y, sceneId: it.scene.id, x0: ins.x, y0: ins.y, x: ins.x, y: ins.y };
+      store.setUi({ selection: { kind: 'scene', id: it.scene.id }, rightTab: 'selected' }, 'select');
+      this.guideCanvas.style.cursor = 'grabbing';
+      e.preventDefault();
+      return;
+    }
     // 「確認して修正」では、背景をドラッグして見せる位置を変えられる
     const bgTarget = this.editableBg();
     if (bgTarget) {
@@ -591,6 +628,19 @@ export class Player {
       this.guideCanvas.style.cursor = 'grabbing';
       e.preventDefault();
     }
+  }
+
+  /** いま表示している、動かせる重ね画像(停止中・「確認して修正」のときだけ) */
+  private editableInset(): { scene: Scene; pl: { x: number; y: number; w: number; h: number } } | null {
+    if (store.state.ui.step !== 3 || this.isPlaying()) return null;
+    const p = store.p;
+    const t = this.currentTime();
+    const sr = this.sceneAt(t);
+    const scene = sr ? p.scenes.find((s) => s.id === sr.id) : undefined;
+    const ins = scene?.inset;
+    const a = ins ? p.assets.find((x) => x.id === ins.assetId) : undefined;
+    if (!scene || !ins || !a?.width || !a.height || this.insetImg.style.display === 'none') return null;
+    return { scene, pl: placeInset(a.width, a.height, p.export.width, p.export.height, ins) };
   }
 
   /** いま表示している、位置を動かせる背景(停止中・「確認して修正」のときだけ) */
@@ -606,6 +656,21 @@ export class Player {
 
   /** ホイール(トラックパッドのピンチ・2本指スクロール)で背景を拡大縮小 */
   private onWheel(e: WheelEvent) {
+    // 重ねた画像の上では、画像の大きさを変える
+    const it = this.editableInset();
+    if (it) {
+      const pt = this.toStage(e as unknown as PointerEvent);
+      if (pt.x >= it.pl.x && pt.x <= it.pl.x + it.pl.w && pt.y >= it.pl.y && pt.y <= it.pl.y + it.pl.h) {
+        e.preventDefault();
+        const id = it.scene.id;
+        const w0 = it.scene.inset!.width;
+        const w = Math.round(Math.max(0.1, Math.min(1, w0 * Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.002)))) * 1000) / 1000;
+        if (w === w0) return;
+        store.setUi({ selection: { kind: 'scene', id } }, 'select');
+        store.commit((p) => ({ ...p, scenes: p.scenes.map((s) => (s.id === id && s.inset ? { ...s, inset: { ...s.inset, width: w } } : s)) }), { coalesce: `insetzoom-${id}` });
+        return;
+      }
+    }
     const t = this.editableBg();
     if (!t) return;
     e.preventDefault();
@@ -618,6 +683,16 @@ export class Player {
   }
 
   private onPointerMove(e: PointerEvent) {
+    const idg = this.insetDrag;
+    if (idg) {
+      const pt = this.toStage(e);
+      const W = store.p.export.width;
+      const H = store.p.export.height;
+      idg.x = Math.max(0, Math.min(1, idg.x0 + (pt.x - idg.startX) / W));
+      idg.y = Math.max(0, Math.min(1, idg.y0 + (pt.y - idg.startY) / H));
+      this.render(this.currentTime());
+      return;
+    }
     const bd = this.bgDrag;
     if (bd) {
       const pt = this.toStage(e);
@@ -628,7 +703,17 @@ export class Player {
       this.render(this.currentTime());
       return;
     }
-    if (!this.drag) return;
+    if (!this.drag) {
+      // 重ねた画像の上ではつかめることを示す
+      if (e.target === this.guideCanvas) {
+        const it = this.editableInset();
+        const pt = this.toStage(e);
+        const over = !!it && pt.x >= it.pl.x && pt.x <= it.pl.x + it.pl.w && pt.y >= it.pl.y && pt.y <= it.pl.y + it.pl.h;
+        const c = over ? 'grab' : '';
+        if (this.guideCanvas.style.cursor !== c) this.guideCanvas.style.cursor = c;
+      }
+      return;
+    }
     const pt = this.toStage(e);
     this.drag.dx = pt.x - this.drag.startX;
     this.drag.dy = pt.y - this.drag.startY;
@@ -637,6 +722,17 @@ export class Player {
   }
 
   private onPointerUp() {
+    const idg = this.insetDrag;
+    if (idg) {
+      this.insetDrag = null;
+      this.guideCanvas.style.cursor = '';
+      const x = Math.round(idg.x * 1000) / 1000;
+      const y = Math.round(idg.y * 1000) / 1000;
+      if (x !== idg.x0 || y !== idg.y0) {
+        store.commit((p) => ({ ...p, scenes: p.scenes.map((s) => (s.id === idg.sceneId && s.inset ? { ...s, inset: { ...s.inset, x, y } } : s)) }));
+      } else this.render(this.currentTime());
+      return;
+    }
     const bd = this.bgDrag;
     if (bd) {
       this.bgDrag = null;
