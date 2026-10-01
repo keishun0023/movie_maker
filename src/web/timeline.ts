@@ -6,12 +6,12 @@ import { decideCuts } from '../shared/silence.js';
 import { timelineOf } from '../shared/project.js';
 import { h } from './dom.js';
 import { store } from './state.js';
-import { toggleKeepCandidate } from './actions.js';
+import { moveCaptionJoint, toggleKeepCandidate } from './actions.js';
 
 const TRACK = { ruler: 18, wave: 64, scenes: 30, caps: 30 };
 const COLORS = ['#3b6ea8', '#6a4fa3', '#2f8a6d', '#a3643a', '#8a3b5c', '#4f7f2f'];
 
-type DragKind = { type: 'scene-boundary'; index: number } | { type: 'cap-start' | 'cap-end'; id: string } | { type: 'seek' } | null;
+type DragKind = { type: 'scene-boundary'; index: number } | { type: 'cap-start' | 'cap-end'; id: string } | { type: 'cap-joint'; a: string; b: string } | { type: 'seek' } | null;
 
 export class TimelineView {
   readonly root: HTMLElement;
@@ -254,7 +254,7 @@ export class TimelineView {
       const ranges = sceneOutputRanges(p.scenes, tl);
       for (let i = 0; i < ranges.length - 1; i++) {
         const bx = src ? this.xOf(p.scenes[i]!.srcEnd) : this.xOf(ranges[i]!.outEnd);
-        if (Math.abs(bx - x) < 6 && !src) return { kind: { type: 'scene-boundary', index: i } };
+        if (Math.abs(bx - x) < 6) return { kind: { type: 'scene-boundary', index: i } };
       }
       const t = src ? srcToOut(tl, this.tOf(x)) : this.tOf(x);
       const s = ranges.find((rg) => t >= rg.outStart && t < rg.outEnd);
@@ -262,11 +262,19 @@ export class TimelineView {
     }
     if (y >= cy) {
       const caps = captionOutputTimings(p.captions, tl);
+      const capById = new Map(p.captions.map((c) => [c.id, c]));
+      const x0Of = (c: (typeof caps)[number]) => (src ? this.xOf(capById.get(c.id)!.srcStart) : this.xOf(c.outStart));
+      const x1Of = (c: (typeof caps)[number]) => (src ? this.xOf(capById.get(c.id)!.srcEnd) : this.xOf(c.outEnd));
+      // 続いているテロップのつなぎ目は、両方いっしょに動かす(語も入れ替わる)
+      for (let i = 0; i < caps.length - 1; i++) {
+        const a = caps[i]!;
+        const b = caps[i + 1]!;
+        const xa = x1Of(a);
+        if (Math.abs(xa - x0Of(b)) < 4 && Math.abs(x - xa) < 6) return { kind: { type: 'cap-joint', a: a.id, b: b.id }, select: { kind: 'caption', id: x < xa ? a.id : b.id } };
+      }
       for (const c of caps) {
-        const x0 = src ? -1e9 : this.xOf(c.outStart);
-        const x1 = src ? -1e9 : this.xOf(c.outEnd);
-        if (Math.abs(x - x0) < 5) return { kind: { type: 'cap-start', id: c.id }, select: { kind: 'caption', id: c.id } };
-        if (Math.abs(x - x1) < 5) return { kind: { type: 'cap-end', id: c.id }, select: { kind: 'caption', id: c.id } };
+        if (Math.abs(x - x0Of(c)) < 5) return { kind: { type: 'cap-start', id: c.id }, select: { kind: 'caption', id: c.id } };
+        if (Math.abs(x - x1Of(c)) < 5) return { kind: { type: 'cap-end', id: c.id }, select: { kind: 'caption', id: c.id } };
       }
       const t = src ? srcToOut(tl, this.tOf(x)) : this.tOf(x);
       const c = caps.find((k) => t >= k.outStart && t < k.outEnd);
@@ -306,25 +314,32 @@ export class TimelineView {
     if (!tl) return;
     if (!this.drag) {
       const hit = this.hit(e);
-      const cursor = hit.kind?.type === 'scene-boundary' || hit.kind?.type === 'cap-start' || hit.kind?.type === 'cap-end' ? 'ew-resize' : hit.candidate ? 'pointer' : 'default';
+      const cursor = hit.kind?.type === 'scene-boundary' || hit.kind?.type === 'cap-start' || hit.kind?.type === 'cap-end' || hit.kind?.type === 'cap-joint' ? 'ew-resize' : hit.candidate ? 'pointer' : 'default';
       if (cursor !== this.hover) {
         this.scroller.style.cursor = cursor;
         this.hover = cursor;
       }
       return;
     }
+    const src = store.state.ui.timelineView === 'source';
     const t = Math.min(tl.outSamples, this.tOf(x));
+    // ドラッグ位置の元音声の時刻(「元音声」表示ではそのまま、「編集後」表示では換算)
+    const sAt = src ? Math.max(0, Math.min(tl.srcSamples, this.tOf(x))) : outToSrc(tl, t);
     const d = this.drag;
     if (d.type === 'seek') {
-      this.onSeek?.(store.state.ui.timelineView === 'source' ? srcToOut(tl, this.tOf(x)) : t);
+      this.onSeek?.(src ? srcToOut(tl, this.tOf(x)) : t);
     } else if (d.type === 'scene-boundary') {
       const p = store.p;
-      const ranges = sceneOutputRanges(p.scenes, tl);
       const minGap = 0.3 * SR;
-      const lo = ranges[d.index]!.outStart + minGap;
-      const hi = ranges[d.index + 1]!.outEnd - minGap;
-      const nt = Math.max(lo, Math.min(hi, t));
-      const s = outToSrc(tl, nt);
+      let s: number;
+      if (src) {
+        s = Math.max(p.scenes[d.index]!.srcStart + minGap, Math.min(p.scenes[d.index + 1]!.srcEnd - minGap, sAt));
+      } else {
+        const ranges = sceneOutputRanges(p.scenes, tl);
+        const lo = ranges[d.index]!.outStart + minGap;
+        const hi = ranges[d.index + 1]!.outEnd - minGap;
+        s = outToSrc(tl, Math.max(lo, Math.min(hi, t)));
+      }
       store.commit(
         (pp) => ({
           ...pp,
@@ -332,15 +347,21 @@ export class TimelineView {
         }),
         { coalesce: 'scene-boundary-' + d.index },
       );
+    } else if (d.type === 'cap-joint') {
+      moveCaptionJoint(d.a, d.b, sAt);
     } else if (d.type === 'cap-start' || d.type === 'cap-end') {
-      const s = outToSrc(tl, t);
+      // 隣のテロップには重ならないようにする
+      const sorted = [...store.p.captions].sort((a, b) => a.srcStart - b.srcStart);
+      const k = sorted.findIndex((c) => c.id === d.id);
+      const prevEnd = sorted[k - 1]?.srcEnd ?? 0;
+      const nextStart = sorted[k + 1]?.srcStart ?? tl.srcSamples;
       store.commit(
         (pp) => ({
           ...pp,
           captions: pp.captions.map((c) => {
             if (c.id !== d.id) return c;
-            if (d.type === 'cap-start') return { ...c, srcStart: Math.min(s, c.srcEnd - 0.1 * SR), timingEdited: true };
-            return { ...c, srcEnd: Math.max(s, c.srcStart + 0.1 * SR), timingEdited: true };
+            if (d.type === 'cap-start') return { ...c, srcStart: Math.max(prevEnd, Math.min(sAt, c.srcEnd - 0.1 * SR)), timingEdited: true };
+            return { ...c, srcEnd: Math.min(nextStart, Math.max(sAt, c.srcStart + 0.1 * SR)), timingEdited: true };
           }),
         }),
         { coalesce: 'cap-drag-' + d.id },

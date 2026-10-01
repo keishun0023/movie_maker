@@ -5,6 +5,7 @@ import { captionOutputTimings, newId, sceneOutputRanges } from '../shared/segmen
 import { autoMotions } from '../shared/motion.js';
 import { drawCaption, effectiveStyle } from '../shared/captionRender.js';
 import { displayFromRaw } from '../shared/jatext.js';
+import { applyTextFixes } from '../shared/script.js';
 import { outToSrc, srcToOut } from '../shared/timemap.js';
 import { api } from './api.js';
 import { toast } from './dom.js';
@@ -381,6 +382,40 @@ export function splitCaption(id: string, charIndex: number) {
   const b: Caption = { ...cap, id: newId('cap'), srcStart: splitSrc, tokenIds: ids2, rawText: raw2, text: t2, textEdited: true };
   store.commit((pp) => ({ ...pp, captions: pp.captions.flatMap((c) => (c.id === id ? [a, b] : [c])) }));
   store.setUi({ selection: { kind: 'caption', id: b.id } }, 'select');
+}
+
+/**
+ * 続いている2つのテロップのつなぎ目を動かす。文章を手で直していなければ、つなぎ目の前後で語も入れ替える
+ * (「〜ちゃう / 白玉肌」の区切りを1語ずらす、など)。
+ */
+export function moveCaptionJoint(aId: string, bId: string, at: number) {
+  const p = store.p;
+  const a = p.captions.find((c) => c.id === aId);
+  const b = p.captions.find((c) => c.id === bId);
+  if (!a || !b) return;
+  const minLen = 0.15 * SR;
+  let s = Math.max(a.srcStart + minLen, Math.min(b.srcEnd - minLen, at));
+  let na: Caption = { ...a, srcEnd: s, timingEdited: true };
+  let nb: Caption = { ...b, srcStart: s, timingEdited: true };
+  const ids = new Set([...a.tokenIds, ...b.tokenIds]);
+  const toks = (p.transcript?.tokens ?? []).filter((t) => ids.has(t.id)).sort((x, y) => x.start - y.start);
+  if (toks.length >= 2) {
+    // 語の切れ目に合わせる(どちらにも1語以上残す)
+    let k = toks.findIndex((t) => (t.start + t.end) / 2 >= s);
+    if (k < 0) k = toks.length;
+    k = Math.max(1, Math.min(toks.length - 1, k));
+    const ta = toks.slice(0, k);
+    const tb = toks.slice(k);
+    const prevEnd = ta[ta.length - 1]!.end;
+    const nextStart = tb[0]!.start;
+    s = Math.max(a.srcStart + minLen, Math.min(b.srcEnd - minLen, Math.min(Math.max(s, prevEnd), nextStart)));
+    const rawA = ta.map((t) => t.text).join('').replace(/^\s+/, '');
+    const rawB = tb.map((t) => t.text).join('').replace(/^\s+/, '');
+    const textOf = (raw: string) => applyTextFixes(displayFromRaw(raw), p.textFixes);
+    na = { ...na, srcEnd: s, tokenIds: ta.map((t) => t.id), rawText: rawA, ...(a.textEdited ? {} : { text: textOf(rawA) }) };
+    nb = { ...nb, srcStart: s, tokenIds: tb.map((t) => t.id), rawText: rawB, ...(b.textEdited ? {} : { text: textOf(rawB) }) };
+  }
+  store.commit((pp) => ({ ...pp, captions: pp.captions.map((c) => (c.id === aId ? na : c.id === bId ? nb : c)) }), { coalesce: `cap-joint-${aId}` });
 }
 
 export function mergeCaptionWithNext(id: string) {
