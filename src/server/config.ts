@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -24,3 +25,29 @@ export const TOOLS_DIR = path.join(APP_ROOT, '.tools');
 
 export const HOST = process.env.TDM_HOST ?? '127.0.0.1';
 export const PORT = Number(process.env.PORT ?? process.env.TDM_PORT ?? 5178);
+
+/** どの版で動いているか。Mac アプリ版は build-info.json を同梱する。なければ開発版(ターミナルから起動) */
+export interface BuildInfo {
+  kind: 'app' | 'dev';
+  version: string;
+  commit?: string;
+  date?: string;
+  arch?: string;
+}
+
+function readBuildInfo(): BuildInfo {
+  let version = '0.0.0';
+  try {
+    version = (JSON.parse(fs.readFileSync(path.join(APP_ROOT, 'package.json'), 'utf8')) as { version?: string }).version ?? version;
+  } catch {
+    // そのまま
+  }
+  try {
+    const b = JSON.parse(fs.readFileSync(path.join(APP_ROOT, 'build-info.json'), 'utf8')) as Partial<BuildInfo>;
+    return { kind: 'app', version, commit: b.commit, date: b.date, arch: b.arch };
+  } catch {
+    return { kind: 'dev', version };
+  }
+}
+
+export const BUILD_INFO = readBuildInfo();

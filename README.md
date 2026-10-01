@@ -25,6 +25,20 @@ cd このフォルダ
 - `npm install`(依存は Claude API の公式SDK `@anthropic-ai/sdk` 0.129.0 と、開発用の TypeScript・型定義。バージョンは package.json で固定)
 - `npm run build`
 
+## Mac アプリ版(.dmg)
+
+ターミナルを使わずに使いたい場合は、GitHub の **Releases →「Mac アプリ(最新)」** から .dmg をダウンロードします
+(Apple シリコン=M1 以降は `TateDougaMaker-arm64.dmg`、Intel は `TateDougaMaker-x64.dmg`)。
+プッシュするたびに GitHub Actions が自動で作り直します(Actions の実行結果からもダウンロード可)。
+
+1. .dmg を開き、アプリを「Applications」へドラッグ
+2. 初回は「開発元を確認できない」と出るので、システム設定 → プライバシーとセキュリティ →「このまま開く」
+3. 起動するとブラウザで画面が開きます。Dock のアイコンで開き直し、右クリック →「終了」で終了
+
+Node.js・FFmpeg・whisper.cpp を同梱しているので、Homebrew などの準備は要りません。
+データ(`~/TateDougaMaker`)はターミナル版と共通です。同時に2つは起動できず、片方が動いているときはその画面を開きます。
+画面右上に「アプリ版 日付 コミット」または「開発版」と表示されます。
+
 ## 起動
 
 `start.command` をダブルクリック(または `./start.command`)。ブラウザが自動で開きます。

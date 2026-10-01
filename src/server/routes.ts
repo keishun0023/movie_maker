@@ -12,7 +12,7 @@ import { outToSrc } from '../shared/timemap.js';
 import { hintTerms, mergeHints } from '../shared/script.js';
 import { buildPreview, importUpload, removeAssetFiles } from './assets.js';
 import { WhisperCppAdapter } from './asr/whisperCpp.js';
-import { PRESETS_FILE } from './config.js';
+import { BUILD_INFO, PRESETS_FILE } from './config.js';
 import { cleanupDir, exportBaseName, runExport, type CaptionImage } from './export.js';
 import { defaultDraftsDir, exportCapcut, findSeed } from './capcut.js';
 import { fontBytes, fontEntry, listFonts, missingChars, registerProjectFont, scanFonts } from './fonts.js';
@@ -54,9 +54,12 @@ const asr = new WhisperCppAdapter();
 
 // ---- システム・モデル ----
 
+/** 起動確認(Mac アプリの起動処理が、すでに動いているかを調べるのに使う) */
+router.get('/api/ping', (_req, res) => sendJson(res, 200, { app: 'tate-douga-maker', build: BUILD_INFO }));
+
 router.get('/api/system', async (_req, res) => {
   const sys = await systemInfo(true);
-  sendJson(res, 200, { system: sys, recommend: recommend(sys), models: listModels(), asrAvailable: asr.available() });
+  sendJson(res, 200, { system: sys, recommend: recommend(sys), models: listModels(), asrAvailable: asr.available(), build: BUILD_INFO });
 });
 
 router.post('/api/models/:id/download', (req, res) => {

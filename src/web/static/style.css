@@ -206,3 +206,5 @@ a { color: var(--accent); }
 .trim-thumbs img { flex: 1; min-width: 0; height: 100%; object-fit: cover; opacity: 0.55; }
 .trim-thumbs .hint { padding: 18px 8px; }
 .trim-win { position: absolute; top: 0; bottom: 0; min-width: 6px; border: 3px solid var(--accent, #3b82f6); border-radius: 5px; background: rgba(59, 130, 246, 0.18); box-shadow: 0 0 0 999px rgba(0, 0, 0, 0.25); cursor: grab; pointer-events: none; }
+
+.build-label { font-size: 11px; opacity: 0.55; margin-left: 8px; white-space: nowrap; }

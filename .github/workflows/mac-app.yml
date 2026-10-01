@@ -1,0 +1,103 @@
+name: Mac アプリ(.dmg)
+
+# プッシュするたびに Mac アプリ(Apple シリコン用・Intel 用の .dmg)を作り、
+# リリース「app-latest」に置く(Actions の実行結果からもダウンロードできる)
+on:
+  push:
+    branches: [claude/serene-tesla-x90ztd, main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mac-app-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      WHISPER_TAG: v1.9.4
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: ビルド
+        run: |
+          npm ci --no-fund --no-audit
+          npm run build
+          npm prune --omit=dev --no-fund --no-audit
+
+      - name: whisper.cpp(Apple シリコン用・Intel 用)
+        run: |
+          git clone --depth 1 --branch "$WHISPER_TAG" https://github.com/ggml-org/whisper.cpp wcpp
+          for A in arm64 x86_64; do
+            cmake -S wcpp -B "wcpp/build-$A" \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_OSX_ARCHITECTURES="$A" \
+              -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 \
+              -DBUILD_SHARED_LIBS=OFF \
+              -DGGML_NATIVE=OFF \
+              -DGGML_OPENMP=OFF \
+              -DGGML_METAL_EMBED_LIBRARY=ON \
+              -DWHISPER_BUILD_TESTS=OFF \
+              -DWHISPER_BUILD_SERVER=OFF
+            cmake --build "wcpp/build-$A" --config Release --target whisper-cli -j 4
+            ls -la "wcpp/build-$A/bin/"
+          done
+
+      - name: アプリを組み立てる(Apple シリコン用)
+        run: bash scripts/mac/build-app.sh arm64 wcpp/build-arm64/bin/whisper-cli
+
+      - name: アプリを組み立てる(Intel 用)
+        run: bash scripts/mac/build-app.sh x64 wcpp/build-x86_64/bin/whisper-cli
+
+      - name: 起動テスト(Apple シリコン用)
+        run: |
+          RES=out/arm64/TateDougaMaker.app/Contents/Resources
+          export TDM_DATA_DIR="$RUNNER_TEMP/tdm-data"
+          TDM_NO_OPEN=1 bash "$RES/launcher.sh" start > pid.txt
+          cat pid.txt
+          curl -fsS http://127.0.0.1:5178/api/ping
+          echo
+          curl -fsS http://127.0.0.1:5178/api/system > system.json
+          python3 - <<'PY'
+          import json
+          d = json.load(open('system.json'))
+          t = d['system']['tools']
+          print('tools:', t, 'build:', d.get('build'))
+          assert t.get('ffmpeg') and t.get('whisper'), 'ffmpeg / whisper-cli が見つからない'
+          assert d.get('build', {}).get('kind') == 'app'
+          PY
+          "$RES/bin/ffmpeg" -hide_banner -encoders | grep -E 'libx264|h264_videotoolbox'
+          "$RES/bin/whisper-cli" --help > /dev/null 2>&1 || "$RES/bin/whisper-cli" -h | head -3
+          kill "$(cat pid.txt)" || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TateDougaMaker-dmg
+          path: out/*.dmg
+          retention-days: 14
+
+      - name: リリース「app-latest」に置く
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SHORT="$(git rev-parse --short HEAD)"
+          NOTES="最新の Mac アプリ($(date -u +%Y-%m-%d) / ${SHORT} / ブランチ ${GITHUB_REF_NAME})。
+          Apple シリコン(M1 以降)の Mac は TateDougaMaker-arm64.dmg、Intel の Mac は TateDougaMaker-x64.dmg を使ってください。
+          初回は「開発元を確認できない」と出るので、システム設定 → プライバシーとセキュリティ →「このまま開く」で許可してください。"
+          git tag -f app-latest
+          git push -f origin app-latest
+          if gh release view app-latest > /dev/null 2>&1; then
+            gh release edit app-latest --title "Mac アプリ(最新)" --notes "$NOTES" --prerelease
+          else
+            gh release create app-latest --title "Mac アプリ(最新)" --notes "$NOTES" --prerelease
+          fi
+          gh release upload app-latest out/*.dmg --clobber

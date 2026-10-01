@@ -180,6 +180,7 @@ async function openEditor(id: string) {
       button('↶', () => store.undo(), { title: '元に戻す (⌘Z)', disabled: !store.canUndo(), class: 'icon-btn' }),
       button('↷', () => store.redo(), { title: 'やり直す (⇧⌘Z)', disabled: !store.canRedo(), class: 'icon-btn' }),
       h('span', { class: 'save ' + store.state.saveState }, saveLabel),
+      buildLabel(),
     );
   };
 
@@ -296,3 +297,11 @@ boot().catch((e) => {
   console.error(e);
   mount(app, h('div', { class: 'fatal' }, '起動に失敗しました: ' + (e as Error).message));
 });
+
+/** 今動いている版(アプリ版か、ターミナルから起動した開発版か) */
+function buildLabel(): HTMLElement | null {
+  const b = store.state.system?.build;
+  if (!b) return null;
+  const text = b.kind === 'app' ? `アプリ版 ${b.date ?? ''} ${b.commit ?? ''}`.trim() : '開発版';
+  return h('span', { class: 'build-label', title: b.kind === 'app' ? `Mac アプリ版(${b.arch ?? ''})` : 'ターミナルから起動した版(git pull で最新)' }, text);
+}

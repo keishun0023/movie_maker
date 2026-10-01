@@ -33,7 +33,16 @@ export interface ModelStatus {
   path: string;
 }
 
+export interface BuildInfo {
+  kind: 'app' | 'dev';
+  version: string;
+  commit?: string;
+  date?: string;
+  arch?: string;
+}
+
 export interface SystemResp {
+  build?: BuildInfo;
   system: {
     platform: string;
     arch: string;
