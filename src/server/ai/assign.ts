@@ -447,3 +447,22 @@ export async function videoShots(p: Project, a: Asset, signal: AbortSignal, prog
   await Promise.all(Array.from({ length: Math.min(4, shots.length) }, worker));
   return out;
 }
+
+/** 動画全体の見取り図(等間隔のサムネイル)。区間を選ぶときの帯に使う */
+export async function videoStrip(p: Project, a: Asset, n: number, signal: AbortSignal): Promise<{ t: number; frame: string }[]> {
+  if (a.kind !== 'video') throw new Error('動画の素材ではありません。');
+  const dir = sub(p.id, 'work', 'aiframes');
+  await fsp.mkdir(dir, { recursive: true });
+  const dur = a.durationSec ?? 0;
+  const times = Array.from({ length: n }, (_, i) => Math.round(((i + 0.5) * dur * 100) / n) / 100);
+  const out: { t: number; frame: string }[] = new Array(n);
+  let next = 0;
+  const worker = async () => {
+    while (next < n) {
+      const k = next++;
+      out[k] = { t: times[k]!, frame: path.basename(await frameAt(p, a, times[k]!, dir, signal)) };
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(4, n) }, worker));
+  return out;
+}

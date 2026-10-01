@@ -328,8 +328,8 @@ export class Player {
   }
 
   private layerKey(scene: Scene, p: Project): string {
-    // 位置・拡大率・動きは毎フレーム当てはめるので、変えても作り直さない(ドラッグで動かしてもちらつかない)
-    const bg = scene.bg ? { ...scene.bg, fit: undefined, zoom: undefined, offsetX: undefined, offsetY: undefined, motion: undefined, kenBurns: undefined } : null;
+    // 位置・拡大率・動き・使う区間は毎フレーム当てはめるので、変えても作り直さない(ドラッグで動かしてもちらつかない)
+    const bg = scene.bg ? { ...scene.bg, fit: undefined, zoom: undefined, offsetX: undefined, offsetY: undefined, motion: undefined, kenBurns: undefined, startSec: undefined } : null;
     return JSON.stringify([scene.id, bg, scene.inset, scene.speed ?? 1, p.export.width, p.export.height]);
   }
 

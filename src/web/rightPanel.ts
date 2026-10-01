@@ -564,6 +564,101 @@ function selectedView(player: Player): HTMLElement {
   );
 }
 
+// 動画の見取り図(素材ごとにキャッシュ)
+const stripCache = new Map<string, { t: number; frame: string }[] | 'loading' | 'error'>();
+
+/**
+ * 動画のどの区間をこのカットで見せるかを選ぶ。動画全体の帯の上に、カットの長さぶんの枠を出し、
+ * ドラッグ(またはクリック)で動かす。プレビューもその場で追従する
+ */
+function trimPicker(p: Project, s: Scene, asset: Asset, cutSec: number, seekToCut: () => void, playCut: () => void): HTMLElement {
+  const dur = asset.durationSec ?? 0;
+  if (!(dur > 0)) return h('div');
+  const strip = stripCache.get(asset.id);
+  if (!strip) {
+    stripCache.set(asset.id, 'loading');
+    api
+      .strip(p.id, asset.id)
+      .then((r) => stripCache.set(asset.id, r))
+      .catch(() => stripCache.set(asset.id, 'error'))
+      .finally(() => store.emit('right'));
+  }
+  const maxStart = Math.max(0, dur - cutSec);
+  const clamp = (v: number) => Math.round(Math.max(0, Math.min(maxStart, v)) * 100) / 100;
+  let start = clamp(s.bg?.startSec ?? 0);
+  const winPct = Math.min(100, (cutSec / dur) * 100);
+  const win = h('div', { class: 'trim-win' });
+  const label = h('span', { class: 'hint' });
+  const paint = () => {
+    win.style.left = `${(start / dur) * 100}%`;
+    win.style.width = `${winPct}%`;
+    label.textContent = `${start.toFixed(1)}〜${Math.min(dur, start + cutSec).toFixed(1)}秒を使用(動画全体 ${dur.toFixed(1)}秒)`;
+  };
+  paint();
+  const commit = (v: number, live: boolean) => {
+    start = clamp(v);
+    paint();
+    // ドラッグ中は右の画面を作り直さず、1回の「元に戻す」で戻せるようにまとめる
+    store.commit((pp) => ({ ...pp, scenes: pp.scenes.map((sc) => (sc.id === s.id && sc.bg ? { ...sc, bg: { ...sc.bg, startSec: start }, aiNote: undefined } : sc)) }), live ? { coalesce: `trim-${s.id}`, skip: 'right' } : { coalesce: `trim-${s.id}` });
+  };
+  const thumbs = h(
+    'div',
+    { class: 'trim-thumbs' },
+    Array.isArray(strip) ? strip.map((f) => h('img', { src: `/api/projects/${p.id}/aiframes/${encodeURIComponent(f.frame)}`, alt: '', draggable: false })) : h('span', { class: 'hint' }, strip === 'error' ? '見取り図を作れませんでした' : '動画を読み込んでいます…'),
+  );
+  const bar = h('div', { class: 'trim-bar', title: 'ドラッグ・クリックで、このカットに使う区間を選びます' }, thumbs, win);
+  let drag: { x0: number; s0: number; grab: boolean } | null = null;
+  const secAt = (clientX: number) => {
+    const rc = bar.getBoundingClientRect();
+    return ((clientX - rc.left) / Math.max(1, rc.width)) * dur;
+  };
+  bar.addEventListener('pointerdown', (e) => {
+    const t = secAt(e.clientX);
+    // 枠の上なら掴んで動かす。枠の外なら、そこが中心になるよう移動してから掴む
+    const grab = t >= start && t <= start + cutSec;
+    if (!grab) commit(t - cutSec / 2, true);
+    drag = { x0: e.clientX, s0: start, grab };
+    bar.setPointerCapture(e.pointerId);
+    seekToCut();
+    e.preventDefault();
+  });
+  bar.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    const rc = bar.getBoundingClientRect();
+    commit(drag.s0 + ((e.clientX - drag.x0) / Math.max(1, rc.width)) * dur, true);
+  });
+  const end = () => {
+    if (!drag) return;
+    drag = null;
+    commit(start, false);
+  };
+  bar.addEventListener('pointerup', end);
+  bar.addEventListener('pointercancel', end);
+  const nudge = (d: number) => {
+    commit(start + d, false);
+    seekToCut();
+  };
+  return field(
+    'このカットで使う区間',
+    h(
+      'div',
+      null,
+      bar,
+      h('div', { class: 'row gap wrap' }, label),
+      h(
+        'div',
+        { class: 'row gap wrap' },
+        button('◀ 1秒', () => nudge(-1), { class: 'small' }),
+        button('◀ 0.1秒', () => nudge(-0.1), { class: 'small' }),
+        button('0.1秒 ▶', () => nudge(0.1), { class: 'small' }),
+        button('1秒 ▶', () => nudge(1), { class: 'small' }),
+        button('▶ このカットを再生', playCut, { class: 'small' }),
+      ),
+    ),
+    '帯は動画全体です。青い枠がこのカットで見せる区間で、ドラッグで動かせます(プレビューも追従します)',
+  );
+}
+
 /** 動画の場面一覧から、このカットで使う場面を選ぶ */
 function shotPicker(p: Project, s: Scene, asset: Asset, setStart: (sec: number) => void): HTMLElement {
   const shots = shotCache.get(asset.id);
@@ -635,6 +730,7 @@ function sceneInspector(s: Scene, player: Player): HTMLElement {
                 ? h(
                     'div',
                     null,
+                    r ? trimPicker(p, s, asset, (r.outEnd - r.outStart) / SR, () => player.seek(r.outStart), () => void player.play(r.outStart, r.outEnd)) : null,
                     shotPicker(p, s, asset, (start) =>
                       // 選んだ場面の印と使用開始位置の欄を更新するため、右の画面も作り直す
                       store.commit((pp) => ({ ...pp, scenes: pp.scenes.map((sc) => (sc.id === s.id && sc.bg ? { ...sc, bg: { ...sc.bg, startSec: start }, aiNote: undefined } : sc)) })),

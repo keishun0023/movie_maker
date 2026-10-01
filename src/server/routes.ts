@@ -7,7 +7,7 @@ import { speechChunks, tokensFromChunks } from '../shared/chunks.js';
 import { alignChunkTokens } from '../shared/align.js';
 import { geminiTranscribe, listGeminiModels, resolveGeminiModel } from './asr/gemini.js';
 import { anthropicKey, anthropicKeySource, geminiKey, geminiKeySource, setAnthropicKey, setGeminiKey } from './secrets.js';
-import { aiAssign, videoShots } from './ai/assign.js';
+import { aiAssign, videoShots, videoStrip } from './ai/assign.js';
 import { outToSrc } from '../shared/timemap.js';
 import { hintTerms, mergeHints } from '../shared/script.js';
 import { buildPreview, importUpload, removeAssetFiles } from './assets.js';
@@ -309,6 +309,16 @@ router.post('/api/projects/:id/shots', async (req, res) => {
     runner: async (ctx) => ({ assetId: asset.id, shots: await videoShots(project, asset, ctx.signal, ctx.progress) }),
   });
   sendJson(res, 200, job);
+});
+
+/** 動画の見取り図(等間隔のサムネイル) */
+router.get('/api/projects/:id/strip/:assetId', async (req, res) => {
+  const id = assertId(req.params.id!);
+  const p = await loadProject(id);
+  const asset = p.assets.find((a) => a.id === req.params.assetId && a.status === 'ok');
+  if (!asset || asset.kind !== 'video') throw new HttpError(404, '動画の素材が見つかりません');
+  const n = Math.max(4, Math.min(24, Number(req.query.get('n') ?? 12) || 12));
+  sendJson(res, 200, await videoStrip(p, asset, n, new AbortController().signal));
 });
 
 router.get('/api/projects/:id/aiframes/:name', async (req, res) => {
