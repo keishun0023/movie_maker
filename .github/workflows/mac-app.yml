@@ -30,7 +30,7 @@ jobs:
 
       - name: ビルド
         run: |
-          npm ci --no-fund --no-audit
+          npm install --no-fund --no-audit
           npm run build
           npm prune --omit=dev --no-fund --no-audit
 
