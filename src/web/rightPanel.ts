@@ -6,6 +6,7 @@ import { captionOutputTimings, sceneOutputRanges } from '../shared/segment.js';
 import { suggestFromScript } from '../shared/script.js';
 import { DEFAULT_STYLE, effectiveStyle } from '../shared/captionRender.js';
 import { MOTION_LABELS, motionOf } from '../shared/motion.js';
+import { alignCutsToReference, parseReferenceTable } from '../shared/reference.js';
 import { outToSrc, srcToOut } from '../shared/timemap.js';
 import { api, mediaUrl } from './api.js';
 import { button, checkbox, colorInput, field, fmtBytes, fmtSec, h, numInput, select, slider, toast } from './dom.js';
@@ -32,6 +33,7 @@ import {
   splitCaption,
   splitSceneAt,
   startCapcutExport,
+  sceneTextOf,
   toggleKeepCandidate,
   startExport,
   updateCaption,
@@ -509,9 +511,10 @@ function aiAssignSection(p: Project): HTMLElement {
       'div',
       { class: 'note' },
       h('b', null, '送信される内容: '),
-      `選んだ素材のフレーム画像(動画は数枚ずつ、長辺384px)、各カットのテロップの文章${p.script.trim() ? '、台本' : ''}。音声や元のファイルそのものは送りません。`,
+      `選んだ素材のフレーム画像(動画は場面ごとに1枚、長辺384px)、素材のファイル名、各カットのテロップの文章${p.script.trim() ? '、台本' : ''}${p.aiAssign.useReference && p.aiAssign.reference?.trim() ? '、素材の指定の表' : ''}。音声や元のファイルそのものは送りません。`,
       checkbox(p.aiAssign.consent, 'これらを Claude API(Anthropic)に送信することに同意する', (v) => store.commit((pp) => ({ ...pp, aiAssign: { ...pp.aiAssign, consent: v } }))),
     ),
+    referenceBox(p),
     (() => {
       const n = splitScenesToCutLength(p).scenes.length;
       return h(
@@ -526,6 +529,53 @@ function aiAssignSection(p: Project): HTMLElement {
     })(),
     jobsBox(['ai-assign']),
   );
+}
+
+/** 素材の指定(参考): スプレッドシートから「台本 / 使う素材」を貼り付けて、割り当ての参考にする */
+function referenceBox(p: Project): HTMLElement {
+  const on = !!p.aiAssign.useReference;
+  const setA = (patch: Partial<Project['aiAssign']>, key?: string) =>
+    store.commit((pp) => ({ ...pp, aiAssign: { ...pp.aiAssign, ...patch } }), key ? { coalesce: key, skip: 'right' } : {});
+  const box = h(
+    'div',
+    { class: 'note' },
+    checkbox(on, '素材の指定(参考)をもとに割り当てる', (v) => setA({ useReference: v })),
+    h('p', { class: 'hint' }, 'チェックすると、台本の行ごとに指定した素材(例: 「サナ」「商品アップ」「飲んでいる」)に沿って割り当てます。チェックしなければ全部おまかせです。'),
+  );
+  if (!on) return box;
+  const rows = parseReferenceTable(p.aiAssign.reference ?? '');
+  const ta = h('textarea', {
+    rows: 6,
+    class: 'ref-input',
+    placeholder: 'スプレッドシートで「台本」と「素材」の2列を選んでコピーし、ここに貼り付けてください(セル内の改行もそのままで大丈夫です)',
+  });
+  ta.value = p.aiAssign.reference ?? '';
+  ta.addEventListener('input', () => setA({ reference: ta.value }, 'ai-reference'));
+  // 貼り付けたら、読み取り結果をすぐ表示する
+  ta.addEventListener('change', () => setTimeout(() => store.emit('right'), 0));
+  // どのカットがどの行に当たるか
+  const scenes = splitScenesToCutLength(p).scenes;
+  const textOf = sceneTextOf({ ...p, scenes });
+  const idx = rows.length ? alignCutsToReference(scenes.map(textOf), rows) : [];
+  const perRow = rows.map((_, r) => idx.filter((x) => x === r).length);
+  box.append(
+    ta,
+    rows.length
+      ? h(
+          'div',
+          null,
+          h('p', { class: 'hint' }, `${rows.length} 行を読み取りました。${idx.filter((x) => x >= 0).length} / ${scenes.length} カットが台本の行に対応しています。`),
+          h(
+            'table',
+            { class: 'ref-table' },
+            h('tr', null, h('th', null, '台本'), h('th', null, '素材の指定'), h('th', null, 'カット')),
+            rows.map((r, i) => h('tr', { class: perRow[i] ? '' : 'none' }, h('td', null, r.line), h('td', null, r.hint || '—'), h('td', null, perRow[i] ? `${perRow[i]}` : '0'))),
+          ),
+          perRow.some((n) => n === 0) ? h('p', { class: 'hint' }, '「カット 0」の行は、文字起こしに見つからなかった行です(台本と話した内容が違う所など)。') : null,
+        )
+      : h('p', { class: 'hint' }, 'まだ読み取れる行がありません。'),
+  );
+  return box;
 }
 
 // ---------- 3. 確認して修正 ----------

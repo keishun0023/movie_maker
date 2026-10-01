@@ -208,3 +208,10 @@ a { color: var(--accent); }
 .trim-win { position: absolute; top: 0; bottom: 0; min-width: 6px; border: 3px solid var(--accent, #3b82f6); border-radius: 5px; background: rgba(59, 130, 246, 0.18); box-shadow: 0 0 0 999px rgba(0, 0, 0, 0.25); cursor: grab; pointer-events: none; }
 
 .build-label { font-size: 11px; opacity: 0.55; margin-left: 8px; white-space: nowrap; }
+
+/* 素材の指定(参考) */
+.ref-input { width: 100%; font-size: 12px; margin: 6px 0; }
+.ref-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 4px; }
+.ref-table th, .ref-table td { border-bottom: 1px solid rgba(255,255,255,0.08); padding: 3px 4px; text-align: left; vertical-align: top; }
+.ref-table td:last-child, .ref-table th:last-child { text-align: right; width: 3em; }
+.ref-table tr.none td { opacity: 0.5; }

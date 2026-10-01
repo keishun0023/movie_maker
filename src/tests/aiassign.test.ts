@@ -109,6 +109,8 @@ test('Claude API へ素材のフレームとカットの文章を送り、提案
     p.scenes = [0, 2, 4].map((s, i) => ({ id: `s${i}`, srcStart: s * SR, srcEnd: (s + 2) * SR, bg: null, inset: null }));
     p.captions = [{ id: 'c1', srcStart: 0.2 * SR, srcEnd: 1.8 * SR, tokenIds: [], rawText: '', text: '朝ランニングをします', textEdited: true, timingEdited: false }];
     p.aiAssign.consent = true;
+    p.aiAssign.useReference = true;
+    p.aiAssign.reference = '朝ランニングをします\t"走っている動画\n※朝の雰囲気"\nまとめ\t料理';
     const r = await aiAssign({ project: p, apiKey: 'sk-ant-test', signal: new AbortController().signal, progress: () => undefined });
     assert.equal(seen.model, 'claude-opus-5-5');
     assert.ok(seen.path?.startsWith('/v1/messages'));
@@ -118,7 +120,9 @@ test('Claude API へ素材のフレームとカットの文章を送り、提案
     // 動画は場面の切り替わりで4つの場面に分け、場面ごとに画像を送る
     assert.equal(seen.images, 5, `images ${seen.images}`);
     for (const id of ['V1-1', 'V1-2', 'V1-3', 'V1-4', 'I1']) assert.ok(seen.text.includes(id), id);
-    assert.ok(seen.text.includes('カット1 (2秒): 朝ランニングをします'));
+    assert.ok(seen.text.includes('カット1 (2秒): 朝ランニングをします 【素材の指定: 走っている動画 ※朝の雰囲気】'));
+    assert.ok(seen.text.includes('# 素材の指定(参考)'));
+    assert.ok(r.notes.some((n) => n.includes('素材の指定(2 行)')));
     // カット1 は V1-2(1.5秒〜)。カット2 は同じ場面を避けて第2候補の画像。カット3 は近くと重ならない場面
     const got = r.assignments.map((a) => [a.sceneId, a.assetId, a.startSec]);
     assert.deepEqual(got.slice(0, 2), [

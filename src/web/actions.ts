@@ -613,7 +613,7 @@ export async function loadShots(assetId: string) {
 }
 
 /** 各カットで話している内容(カットの中央を含むテロップ) */
-function sceneTextOf(p: Project): (s: Scene) => string {
+export function sceneTextOf(p: Project): (s: Scene) => string {
   const tl = timelineOf(p);
   if (!tl) return () => '';
   const ranges = new Map(sceneOutputRanges(p.scenes, tl).map((r) => [r.id, r]));

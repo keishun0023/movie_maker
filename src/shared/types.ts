@@ -331,6 +331,10 @@ export interface Project {
     consent: boolean;
     /** 割り当てに使う素材(空なら全部) */
     assetIds: string[];
+    /** 素材の指定(参考)をもとに割り当てる */
+    useReference?: boolean;
+    /** スプレッドシートから貼り付けた「台本 / 使う素材」の表(タブ区切り) */
+    reference?: string;
   };
   asr: {
     /** whisper: ローカル(whisper.cpp) / gemini: Google Gemini API(音声を送信する) */
