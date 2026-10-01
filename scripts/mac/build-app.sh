@@ -90,7 +90,7 @@ ln -s /Applications "$STAGE/Applications"
 cat > "$STAGE/はじめにお読みください.txt" <<TXT
 縦型動画メーカー(Mac アプリ版 $DATE $COMMIT / $ARCH)
 
-1. 「$APP_NAME」を「Applications」フォルダへドラッグしてください。
+1. 「${APP_NAME}」を「Applications」フォルダへドラッグしてください。
 2. 初回は「開発元を確認できない」と表示されます。
    システム設定 → プライバシーとセキュリティ → 下の方の「このまま開く」を押してください
    (または Finder でアプリを右クリック →「開く」)。1回許可すれば次からは出ません。
