@@ -3,9 +3,10 @@ import { SR, type Project } from '../shared/types.js';
 import { captionOutputTimings, sceneOutputRanges } from '../shared/segment.js';
 import { cutPoints, formatTime, outToSrc, srcToOut } from '../shared/timemap.js';
 import { decideCuts } from '../shared/silence.js';
-import { recomputeCut, timelineOf } from '../shared/project.js';
+import { timelineOf } from '../shared/project.js';
 import { h } from './dom.js';
 import { store } from './state.js';
+import { toggleKeepCandidate } from './actions.js';
 
 const TRACK = { ruler: 18, wave: 64, scenes: 30, caps: 30 };
 const COLORS = ['#3b6ea8', '#6a4fa3', '#2f8a6d', '#a3643a', '#8a3b5c', '#4f7f2f'];
@@ -44,6 +45,10 @@ export class TimelineView {
     });
     this.scroller.addEventListener('scroll', () => this.draw());
     this.scroller.addEventListener('pointerdown', (e) => this.onDown(e));
+    this.scroller.addEventListener('dblclick', (e) => {
+      const hit = this.hit(e as unknown as PointerEvent);
+      if (hit.candidate) toggleKeepCandidate(hit.candidate);
+    });
     this.scroller.addEventListener('pointermove', (e) => this.onMove(e));
     window.addEventListener('pointerup', () => this.onUp());
     this.scroller.addEventListener('wheel', (e) => {
@@ -278,7 +283,8 @@ export class TimelineView {
     const tl = timelineOf(store.p);
     if (!tl) return;
     if (hit.candidate) {
-      this.toggleKeep(hit.candidate);
+      // クリックは選ぶだけ(右で「この間は残す」を切り替え)。うっかり残してしまわないよう、切り替えはダブルクリックかボタンで
+      store.setUi({ selectedCandidate: hit.candidate, step: 2 }, 'candidate');
       return;
     }
     if (hit.select) store.setUi({ selection: hit.select, rightTab: 'selected' }, 'select');
@@ -291,19 +297,7 @@ export class TimelineView {
     this.scroller.setPointerCapture(e.pointerId);
   }
 
-  private toggleKeep(candId: string) {
-    const c = store.p.silenceCandidates.find((k) => k.id === candId);
-    if (!c) return;
-    store.setUi({ selectedCandidate: candId }, 'candidate');
-    const kept = store.p.cut.keepRanges.some((k) => k.start < c.end && k.end > c.start);
-    store.commit((p) => {
-      const keepRanges = kept
-        ? p.cut.keepRanges.filter((k) => !(k.start < c.end && k.end > c.start))
-        : [...p.cut.keepRanges, { start: c.start + Math.floor((c.end - c.start) / 2) - 1, end: c.start + Math.floor((c.end - c.start) / 2) + 1 }];
-      const next = { ...p, cut: { ...p.cut, keepRanges } };
-      return store.state.analysis ? recomputeCut(next, store.state.analysis) : next;
-    });
-  }
+
 
   private onMove(e: PointerEvent) {
     const r = this.scroller.getBoundingClientRect();

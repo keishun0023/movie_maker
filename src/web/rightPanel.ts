@@ -32,6 +32,7 @@ import {
   splitCaption,
   splitSceneAt,
   startCapcutExport,
+  toggleKeepCandidate,
   startExport,
   updateCaption,
   updateScene,
@@ -236,6 +237,9 @@ function autoView(player: Player): HTMLElement {
         'div',
         { class: 'compare' },
         h('div', { class: 'hint' }, `選択中の間: ${fmtSec(selCand.start / SR)}〜${fmtSec(selCand.end / SR)}(${((selCand.end - selCand.start) / SR).toFixed(2)}秒)${selCand.protectedBySpeech ? ' ※発話の可能性があるため削っていません' : ''}`),
+        p.cut.keepRanges.some((k) => k.start < selCand.end && k.end > selCand.start)
+          ? button('「残す」を解除して詰める', () => toggleKeepCandidate(selCand.id))
+          : button('この間は残す', () => toggleKeepCandidate(selCand.id)),
         button('▶ カット前', () => void player.playSource(Math.max(0, selCand.start - SR), Math.min(tl.srcSamples, selCand.end + SR))),
         button('▶ カット後', () => {
           const o0 = srcToOut(tl, selCand.start);
@@ -243,7 +247,7 @@ function autoView(player: Player): HTMLElement {
           void player.play(Math.max(0, o0 - SR), Math.min(tl.outSamples, o1 + SR));
         }),
       )
-    : h('p', { class: 'hint' }, 'タイムラインを「元音声(カット確認)」にすると、無音候補をクリックして「この間は残す」を切り替えたり、カット前後を聞き比べたりできます。');
+    : h('p', { class: 'hint' }, 'タイムラインを「元音声(カット確認)」にすると、無音候補をクリックして選び、「この間は残す」の切り替え(ダブルクリックでも可)や、カット前後の聞き比べができます。');
   const cutSection = section(
     '無音カット',
     h('p', { class: 'hint' }, '「即カット」は無音が来たらすぐ切ります(語頭・語尾を守る数十msだけ残します)。「つらつら(被せ)」はさらに語尾の余韻や語頭に少し食い込んで、前後をクロスフェードで重ねてつなぎます。話す速さはシーンごとに「確認して修正」で変えられます。'),

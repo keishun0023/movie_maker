@@ -559,6 +559,21 @@ export async function runAiAssign() {
   store.setUi({ step: 3, leftTab: 'scenes' });
 }
 
+/** 無音候補の「この間は残す」を切り替える */
+export function toggleKeepCandidate(candId: string) {
+  const c = store.p.silenceCandidates.find((k) => k.id === candId);
+  if (!c) return;
+  store.setUi({ selectedCandidate: candId }, 'candidate');
+  const kept = store.p.cut.keepRanges.some((k) => k.start < c.end && k.end > c.start);
+  store.commit((p) => {
+    const keepRanges = kept
+      ? p.cut.keepRanges.filter((k) => !(k.start < c.end && k.end > c.start))
+      : [...p.cut.keepRanges, { start: c.start + Math.floor((c.end - c.start) / 2) - 1, end: c.start + Math.floor((c.end - c.start) / 2) + 1 }];
+    const next = { ...p, cut: { ...p.cut, keepRanges } };
+    return store.state.analysis ? recomputeCut(next, store.state.analysis) : next;
+  });
+}
+
 /** Claude が挙げたほかの候補に切り替える(今の素材は候補の最後に回すので、押し続けると一巡する) */
 export function nextAlternative(sceneId: string) {
   store.commit((p) => ({
