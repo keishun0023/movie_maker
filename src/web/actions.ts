@@ -539,7 +539,10 @@ export async function runAiAssign() {
     if (done.status === 'failed') toast('素材の割り当てに失敗しました: ' + done.error, 'error');
     return;
   }
-  const { assignments, notes } = done.result as { assignments: { sceneId: string; assetId: string; startSec: number; reason: string }[]; notes: string[] };
+  const { assignments, notes } = done.result as {
+    assignments: { sceneId: string; assetId: string; startSec: number; reason: string; alternatives?: { assetId: string; startSec: number; reason: string }[] }[];
+    notes: string[];
+  };
   const byScene = new Map(assignments.map((a) => [a.sceneId, a]));
   store.commit((p) => ({
     ...p,
@@ -547,13 +550,51 @@ export async function runAiAssign() {
       const a = byScene.get(sc.id);
       const asset = a ? p.assets.find((x) => x.id === a.assetId) : undefined;
       if (!a || !asset) return sc;
-      return { ...sc, bg: { ...defaultBg(asset, p), mode: 'independent', startSec: a.startSec }, aiNote: a.reason };
+      return { ...sc, bg: { ...defaultBg(asset, p), mode: 'independent', startSec: a.startSec }, aiNote: a.reason, aiAlternatives: a.alternatives ?? [] };
     }),
   }));
   // 割り当てと同じ操作で動きも付ける(1回の 元に戻す でまとめて取り消せるよう、履歴はまとめる)
   if (store.p.motionAuto !== false) store.commit((p) => withAutoMotions(p), { noHistory: true });
   toast(`Claude の提案で ${assignments.length} カットに素材を割り当てました(元に戻す で取り消せます)\n${notes.join('\n')}`, 'ok', 8000);
   store.setUi({ step: 3, leftTab: 'scenes' });
+}
+
+/** Claude が挙げたほかの候補に切り替える(今の素材は候補の最後に回すので、押し続けると一巡する) */
+export function nextAlternative(sceneId: string) {
+  store.commit((p) => ({
+    ...p,
+    scenes: p.scenes.map((s) => {
+      if (s.id !== sceneId || !s.aiAlternatives?.length) return s;
+      const [first, ...rest] = s.aiAlternatives;
+      const asset = p.assets.find((a) => a.id === first!.assetId && a.status === 'ok');
+      if (!asset) return { ...s, aiAlternatives: rest };
+      const cur = s.bg ? [{ assetId: s.bg.assetId, startSec: s.bg.startSec, reason: s.aiNote ?? '' }] : [];
+      const motion = s.bg?.motion;
+      return { ...s, bg: { ...defaultBg(asset, p), mode: 'independent', startSec: first!.startSec, ...(motion ? { motion } : {}) }, aiNote: first!.reason, aiAlternatives: [...rest, ...cur] };
+    }),
+  }));
+}
+
+/** 動画の場面一覧(素材ごとにキャッシュ) */
+export const shotCache = new Map<string, { start: number; end: number; frame: string }[] | 'loading'>();
+
+export async function loadShots(assetId: string) {
+  if (shotCache.has(assetId)) return;
+  shotCache.set(assetId, 'loading');
+  store.emit('right');
+  try {
+    const job = await api.shots(JSON.parse(JSON.stringify(store.p)) as Project, assetId);
+    const done = await jobPromise(job);
+    if (done.status === 'done') shotCache.set(assetId, (done.result as { shots: { start: number; end: number; frame: string }[] }).shots);
+    else {
+      shotCache.delete(assetId);
+      if (done.status === 'failed') toast('場面の一覧を作れませんでした: ' + done.error, 'error');
+    }
+  } catch (e) {
+    shotCache.delete(assetId);
+    toast((e as Error).message, 'error');
+  }
+  store.emit('right');
 }
 
 /** 各カットで話している内容(カットの中央を含むテロップ) */

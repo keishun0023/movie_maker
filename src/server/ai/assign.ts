@@ -17,11 +17,16 @@ export const AI_MODEL = 'claude-opus-5-5';
 /** 1回のリクエストに入れる画像の上限 */
 const MAX_IMAGES = 90;
 
-export interface AssignResult {
-  sceneId: string;
+export interface AssignChoice {
   assetId: string;
   startSec: number;
   reason: string;
+}
+
+export interface AssignResult extends AssignChoice {
+  sceneId: string;
+  /** 気に入らなかったときに切り替える候補(良い順) */
+  alternatives: AssignChoice[];
 }
 
 /** Claude に見せる1枚の画像(1場面、または4場面を並べたもの) */
@@ -376,24 +381,36 @@ export async function aiAssign(opt: AssignOptions): Promise<{ assignments: Assig
   );
   const byIdAsset = new Map(assets.map((a) => [a.id, a]));
   const usedBefore = new Map<string, number>();
+  // 場面の中の使用開始位置。切り替わり直後の1コマを避け、同じ場面の2回目以降は後半を使う
+  const startOf = (s: Shot, cutSec: number, nth: number): number => {
+    if (s.image) return 0;
+    const a = byIdAsset.get(s.assetId)!;
+    const slack = Math.max(0, s.end - s.start - cutSec);
+    let start = nth === 0 ? s.start + Math.min(0.1, slack) : s.start + slack;
+    start = Math.max(0, Math.min(start, Math.max(0, (a.durationSec ?? 0) - cutSec)));
+    return Math.round(start * 100) / 100;
+  };
+  const suggestedIds = [...new Set([...byScene.values()].flat().map((c) => c.shot))];
   const results: AssignResult[] = plan.map((pl, i) => {
     const sc = scenes[i]!;
     const s = pl.shot;
     const a = byIdAsset.get(s.assetId)!;
-    let start = 0;
-    if (!s.image) {
-      const dur = a.durationSec ?? 0;
-      const len = s.end - s.start;
-      const slack = Math.max(0, len - sc.durationSec);
-      // 切り替わり直後の1コマを避ける。同じ場面の2回目以降は後半を使う
-      const n = usedBefore.get(s.id) ?? 0;
-      start = n === 0 ? s.start + Math.min(0.1, slack) : s.start + slack;
-      start = Math.max(0, Math.min(start, Math.max(0, dur - sc.durationSec)));
-      start = Math.round(start * 100) / 100;
-    }
+    const start = startOf(s, sc.durationSec, usedBefore.get(s.id) ?? 0);
     usedBefore.set(s.id, (usedBefore.get(s.id) ?? 0) + 1);
-    const reason = (byScene.get(sc.index) ?? []).find((c) => c.shot === s.id)?.reason ?? (pl.fromChoices ? '' : '近くのカットと重ならない場面');
-    return { sceneId: sc.id, assetId: a.id, startSec: start, reason: `${s.id} ${reason}`.slice(0, 60) };
+    const mine = byScene.get(sc.index) ?? [];
+    const reason = mine.find((c) => c.shot === s.id)?.reason ?? (pl.fromChoices ? '' : '近くのカットと重ならない場面');
+    // 代わりの候補: このカットの Claude の候補 → ほかのカットで挙がった場面(使用回数の少ない順)
+    const alt: AssignChoice[] = [];
+    const seen = new Set([s.id]);
+    const push = (id: string, why: string) => {
+      const sh = shotById.get(id);
+      if (!sh || seen.has(id) || alt.length >= 6) return;
+      seen.add(id);
+      alt.push({ assetId: sh.assetId, startSec: startOf(sh, sc.durationSec, 0), reason: `${id} ${why}`.slice(0, 60) });
+    };
+    for (const c of mine) push(c.shot, c.reason);
+    for (const id of [...suggestedIds].sort((x, y) => (usedBefore.get(x) ?? 0) - (usedBefore.get(y) ?? 0))) push(id, 'ほかのカットの候補');
+    return { sceneId: sc.id, assetId: a.id, startSec: start, reason: `${s.id} ${reason}`.slice(0, 60), alternatives: alt };
   });
   const distinct = new Set(plan.map((pl) => pl.shot.id)).size;
   const swapped = plan.filter((pl, i) => pl.shot.id !== byScene.get(scenes[i]!.index)?.[0]?.shot).length;
@@ -404,4 +421,29 @@ export async function aiAssign(opt: AssignOptions): Promise<{ assignments: Assig
   if (fallback) notes.push(`安全判定により別モデル(${msg.model})で処理しました。`);
   notes.push(`Claude (${AI_MODEL}) に ${cat.pictures.length} 枚の画像(${cat.shots.length} 場面)と ${scenes.length} カットの文章を送りました。入力 ${msg.usage.input_tokens} / 出力 ${msg.usage.output_tokens} トークン。`);
   return { assignments: results, notes };
+}
+
+/** 動画を場面に分けて、各場面の代表フレームを用意する(手で場面を選ぶとき用) */
+export async function videoShots(p: Project, a: Asset, signal: AbortSignal, progress: (v: number, m?: string) => void): Promise<{ start: number; end: number; frame: string }[]> {
+  if (a.kind !== 'video') throw new Error('動画の素材ではありません。');
+  const dir = sub(p.id, 'work', 'aiframes');
+  await fsp.mkdir(dir, { recursive: true });
+  const dur = a.durationSec ?? 0;
+  const cuts = dur > 1.5 ? await detectCuts(videoSource(p, a), dur, path.join(dir, `${a.id}-${a.hash.slice(0, 12)}-cuts.json`), signal, (v) => progress(0.05 + 0.6 * v, `場面を調べています ${Math.round(v * 100)}%`)) : [];
+  const shots = shotsFromCuts(dur, cuts);
+  const out: { start: number; end: number; frame: string }[] = new Array(shots.length);
+  let next = 0;
+  let done = 0;
+  const worker = async () => {
+    while (next < shots.length) {
+      const k = next++;
+      const s = shots[k]!;
+      const t = Math.round((s.start + Math.min((s.end - s.start) / 2, 1.5)) * 100) / 100;
+      const file = await frameAt(p, a, t, dir, signal);
+      out[k] = { start: Math.round(s.start * 100) / 100, end: Math.round(s.end * 100) / 100, frame: path.basename(file) };
+      progress(0.65 + 0.35 * (++done / shots.length), `場面の画像を用意しています (${done}/${shots.length})`);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(4, shots.length) }, worker));
+  return out;
 }

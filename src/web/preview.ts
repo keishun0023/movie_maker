@@ -55,6 +55,8 @@ export class Player {
   private stopAt: number | null = null;
   private mode: 'edited' | 'source' = 'edited';
   private drag: { startX: number; startY: number; dx: number; dy: number; capId: string; only: boolean } | null = null;
+  /** 背景のドラッグ(位置の調整)。ox/oy は動かしている途中の位置 */
+  private bgDrag: { startX: number; startY: number; sceneId: string; ox0: number; oy0: number; spanX: number; spanY: number; ox: number; oy: number } | null = null;
   scale = 0.3;
   onTick: ((t: number) => void) | null = null;
 
@@ -72,6 +74,7 @@ export class Player {
     }
     this.narration.addEventListener('ended', () => this.pause());
     this.guideCanvas.addEventListener('pointerdown', (e) => this.onPointerDown(e));
+    this.guideCanvas.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
     window.addEventListener('pointermove', (e) => this.onPointerMove(e));
     window.addEventListener('pointerup', () => this.onPointerUp());
     new ResizeObserver(() => this.fit()).observe(this.root);
@@ -101,7 +104,7 @@ export class Player {
       if (!cur || this.layerKey(cur, p) !== this.layer.key) {
         this.disposeLayer(this.layer);
         this.layer = null;
-      }
+      } else this.layer.scene = cur;
     }
     // 設定が変わったら先読みは作り直す
     for (const l of this.prepared.values()) this.disposeLayer(l);
@@ -280,7 +283,8 @@ export class Player {
   }
 
   private layerKey(scene: Scene, p: Project): string {
-    const bg = scene.bg;
+    // 位置・拡大率・動きは毎フレーム当てはめるので、変えても作り直さない(ドラッグで動かしてもちらつかない)
+    const bg = scene.bg ? { ...scene.bg, fit: undefined, zoom: undefined, offsetX: undefined, offsetY: undefined, motion: undefined, kenBurns: undefined } : null;
     return JSON.stringify([scene.id, bg, scene.inset, scene.speed ?? 1, p.export.width, p.export.height]);
   }
 
@@ -381,6 +385,7 @@ export class Player {
   private switchLayer(scene: Scene, p: Project) {
     const key = this.layerKey(scene, p);
     if (this.layer?.key === key) {
+      this.layer.scene = scene;
       if (this.pendingLayer) {
         this.disposeLayer(this.pendingLayer);
         this.pendingLayer = null;
@@ -426,7 +431,9 @@ export class Player {
     const a = layer.asset;
     const media = layer.el.firstElementChild as HTMLElement | null;
     if (!media || !a.width || !a.height) return;
-    const pl = placeBackground(a.width, a.height, W, H, bg);
+    // 背景をドラッグ中は、その位置で表示する
+    const o = this.bgDrag && this.bgDrag.sceneId === layer.scene.id ? { offsetX: this.bgDrag.ox, offsetY: this.bgDrag.oy } : {};
+    const pl = placeBackground(a.width, a.height, W, H, { ...bg, ...o });
     Object.assign(media.style, { left: `${pl.x}px`, top: `${pl.y}px`, width: `${pl.w}px`, height: `${pl.h}px` });
     // カット内の動き(書き出しと同じ式)
     const mex = motionExprs(motionOf(bg), (sr.outEnd - sr.outStart) / SR, W, H);
@@ -525,10 +532,57 @@ export class Player {
       this.drag = { startX: pt.x, startY: pt.y, dx: 0, dy: 0, capId: this.capId, only: e.altKey };
       store.setUi({ selection: { kind: 'caption', id: this.capId } }, 'select');
       e.preventDefault();
+      return;
+    }
+    // 「確認して修正」では、背景をドラッグして見せる位置を変えられる
+    const bgTarget = this.editableBg();
+    if (bgTarget) {
+      const { scene, pl } = bgTarget;
+      const W = store.p.export.width;
+      const H = store.p.export.height;
+      const bg = scene.bg!;
+      this.bgDrag = { startX: pt.x, startY: pt.y, sceneId: scene.id, ox0: bg.offsetX, oy0: bg.offsetY, spanX: Math.abs(W - pl.w), spanY: Math.abs(H - pl.h), ox: bg.offsetX, oy: bg.offsetY };
+      store.setUi({ selection: { kind: 'scene', id: scene.id }, rightTab: 'selected' }, 'select');
+      this.guideCanvas.style.cursor = 'grabbing';
+      e.preventDefault();
     }
   }
 
+  /** いま表示している、位置を動かせる背景(停止中・「確認して修正」のときだけ) */
+  private editableBg(): { scene: Scene; pl: { w: number; h: number } } | null {
+    if (store.state.ui.step !== 3 || this.isPlaying()) return null;
+    const layer = this.layer;
+    const bg = layer?.scene.bg;
+    const a = layer?.asset;
+    if (!layer || !bg || !a?.width || !a.height) return null;
+    const pl = placeBackground(a.width, a.height, store.p.export.width, store.p.export.height, bg);
+    return { scene: layer.scene, pl };
+  }
+
+  /** ホイール(トラックパッドのピンチ・2本指スクロール)で背景を拡大縮小 */
+  private onWheel(e: WheelEvent) {
+    const t = this.editableBg();
+    if (!t) return;
+    e.preventDefault();
+    const id = t.scene.id;
+    const z0 = t.scene.bg!.zoom;
+    const z = Math.round(Math.max(0.5, Math.min(3, z0 * Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.002)))) * 1000) / 1000;
+    if (z === z0) return;
+    store.setUi({ selection: { kind: 'scene', id } }, 'select');
+    store.commit((p) => ({ ...p, scenes: p.scenes.map((s) => (s.id === id && s.bg ? { ...s, bg: { ...s.bg, zoom: z } } : s)) }), { coalesce: `bgzoom-${id}` });
+  }
+
   private onPointerMove(e: PointerEvent) {
+    const bd = this.bgDrag;
+    if (bd) {
+      const pt = this.toStage(e);
+      const clamp = (v: number) => Math.max(-1, Math.min(1, v));
+      // はみ出している量の範囲で動かす(はみ出しがない向きには動かない)
+      if (bd.spanX > 1) bd.ox = clamp(bd.ox0 + (2 * (pt.x - bd.startX)) / bd.spanX);
+      if (bd.spanY > 1) bd.oy = clamp(bd.oy0 + (2 * (pt.y - bd.startY)) / bd.spanY);
+      this.render(this.currentTime());
+      return;
+    }
     if (!this.drag) return;
     const pt = this.toStage(e);
     this.drag.dx = pt.x - this.drag.startX;
@@ -538,6 +592,17 @@ export class Player {
   }
 
   private onPointerUp() {
+    const bd = this.bgDrag;
+    if (bd) {
+      this.bgDrag = null;
+      this.guideCanvas.style.cursor = '';
+      const ox = Math.round(bd.ox * 1000) / 1000;
+      const oy = Math.round(bd.oy * 1000) / 1000;
+      if (ox !== bd.ox0 || oy !== bd.oy0) {
+        store.commit((p) => ({ ...p, scenes: p.scenes.map((s) => (s.id === bd.sceneId && s.bg ? { ...s, bg: { ...s.bg, offsetX: ox, offsetY: oy } } : s)) }));
+      } else this.render(this.currentTime());
+      return;
+    }
     const d = this.drag;
     if (!d) return;
     this.drag = null;

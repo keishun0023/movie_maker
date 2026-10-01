@@ -18,6 +18,9 @@ import {
   downloadModel,
   mergeCaptionWithNext,
   mergeScene,
+  nextAlternative,
+  loadShots,
+  shotCache,
   rebuildCaptions,
   reapplyLayout,
   runAiAssign,
@@ -557,6 +560,46 @@ function selectedView(player: Player): HTMLElement {
   );
 }
 
+/** 動画の場面一覧から、このカットで使う場面を選ぶ */
+function shotPicker(p: Project, s: Scene, asset: Asset, setStart: (sec: number) => void): HTMLElement {
+  const shots = shotCache.get(asset.id);
+  if (!shots) return h('div', { class: 'row gap' }, button('場面を一覧から選ぶ', () => void loadShots(asset.id)), h('span', { class: 'hint' }, '動画を場面ごとに分けて並べます'));
+  if (shots === 'loading') return h('div', null, h('p', { class: 'hint' }, '場面を調べています(大きな動画は少しかかります)…'), jobsBox(['shots']));
+  const tl = timelineOf(p);
+  const ranges = tl ? sceneOutputRanges(p.scenes, tl) : [];
+  const cutSec = (() => {
+    const r = ranges.find((x) => x.id === s.id);
+    return r ? (r.outEnd - r.outStart) / SR : 1;
+  })();
+  // ほかのカットでどの場面を使っているか(重複を避ける目安)
+  const usedBy = (sh: { start: number; end: number }) =>
+    p.scenes
+      .map((x, i) => ({ x, i }))
+      .filter(({ x }) => x.id !== s.id && x.bg?.assetId === asset.id && x.bg.mode !== 'synced' && x.bg.startSec >= sh.start - 0.05 && x.bg.startSec < sh.end)
+      .map(({ i }) => `#${i + 1}`);
+  const cur = s.bg?.startSec ?? 0;
+  return field(
+    `場面を選ぶ(${shots.length} 場面)`,
+    h(
+      'div',
+      { class: 'shot-grid' },
+      shots.map((sh) => {
+        const on = cur >= sh.start - 0.05 && cur < sh.end;
+        const used = usedBy(sh);
+        const start = Math.round(Math.max(0, Math.min(sh.start + Math.min(0.1, Math.max(0, sh.end - sh.start - cutSec)), (asset.durationSec ?? 0) - cutSec)) * 100) / 100;
+        return h(
+          'button',
+          { type: 'button', class: 'shot' + (on ? ' on' : ''), title: `${sh.start.toFixed(1)}〜${sh.end.toFixed(1)}秒`, onclick: () => setStart(Math.max(0, start)) },
+          h('img', { src: `/api/projects/${p.id}/aiframes/${encodeURIComponent(sh.frame)}`, loading: 'lazy', alt: '' }),
+          h('span', { class: 'shot-time' }, `${sh.start.toFixed(1)}秒`),
+          used.length ? h('span', { class: 'shot-used' }, `使用中 ${used.join(' ')}`) : null,
+        );
+      }),
+    ),
+    '「使用中」は、ほかのカットで使っている場面です',
+  );
+}
+
 function sceneInspector(s: Scene, player: Player): HTMLElement {
   const p = store.p;
   const tl = timelineOf(p);
@@ -572,6 +615,7 @@ function sceneInspector(s: Scene, player: Player): HTMLElement {
     ? h(
         'div',
         null,
+        h('p', { class: 'hint' }, 'プレビューの映像をドラッグすると見せる位置を、ホイール(トラックパッドのピンチ)で拡大率を変えられます。'),
         field('表示方法', select(bg.fit, [['cover', '画面いっぱい'], ['contain', '全体を表示']], (v) => setBg({ fit: v }))),
         field('拡大率', slider(bg.zoom, { min: 0.5, max: 3, step: 0.01, format: (v) => `${Math.round(v * 100)}%`, onChange: (v) => setBg({ zoom: v }, 'zoom') })),
         field('左右の位置', slider(bg.offsetX, { min: -1, max: 1, step: 0.01, format: (v) => v.toFixed(2), onChange: (v) => setBg({ offsetX: v }, 'ox') })),
@@ -587,6 +631,10 @@ function sceneInspector(s: Scene, player: Player): HTMLElement {
                 ? h(
                     'div',
                     null,
+                    shotPicker(p, s, asset, (start) =>
+                      // 選んだ場面の印と使用開始位置の欄を更新するため、右の画面も作り直す
+                      store.commit((pp) => ({ ...pp, scenes: pp.scenes.map((sc) => (sc.id === s.id && sc.bg ? { ...sc, bg: { ...sc.bg, startSec: start }, aiNote: undefined } : sc)) })),
+                    ),
                     field('使用開始位置(秒)', numInput(bg.startSec, { min: 0, max: asset.durationSec ?? 3600, step: 0.1, onChange: (v) => setBg({ startSec: v }) })),
                     field('シーンより短いとき', select(bg.shortMode, [['freeze', '最後のフレームで静止'], ['loop', 'ループ']], (v) => setBg({ shortMode: v }))),
                     checkbox(bg.audio, '素材の元音声を使う(初期はミュート)', (v) => setBg({ audio: v }), !(asset.audioStreams?.length)),
@@ -606,6 +654,9 @@ function sceneInspector(s: Scene, player: Player): HTMLElement {
     null,
     h('h3', null, `シーン #${idx + 1}`),
     s.aiNote ? h('p', { class: 'note' }, `Claude の提案理由: ${s.aiNote}`) : null,
+    s.aiAlternatives?.length
+      ? h('div', { class: 'row gap' }, button(`別の候補にする(候補 ${s.aiAlternatives.length} 個)`, () => nextAlternative(s.id)), h('span', { class: 'hint' }, `次: ${s.aiAlternatives[0]!.reason}`))
+      : null,
     r ? h('p', { class: 'hint' }, `${fmtSec(r.outStart / SR)} – ${fmtSec(r.outEnd / SR)}(${dur.toFixed(2)}秒)`) : null,
     h(
       'div',

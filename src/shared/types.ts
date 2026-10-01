@@ -254,6 +254,8 @@ export interface Scene {
   speed?: number;
   /** AI が素材を提案したときの理由(表示用) */
   aiNote?: string;
+  /** AI が挙げたほかの候補(「別の候補にする」で順に切り替える) */
+  aiAlternatives?: { assetId: string; startSec: number; reason: string }[];
 }
 
 export interface BgmSettings {

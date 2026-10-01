@@ -75,6 +75,7 @@ export const api = {
   analysis: (projectId: string, key: string) => call<AnalysisData>('GET', `/api/projects/${projectId}/analysis/${key}`),
   settings: () => call<{ geminiKeySource: 'env' | 'file' | null; anthropicKeySource: 'env' | 'file' | null }>('GET', '/api/settings'),
   setAnthropicKey: (key: string | null) => call<{ anthropicKeySource: 'env' | 'file' | null }>('PUT', '/api/settings/anthropic-key', { key }),
+  shots: (project: Project, assetId: string) => call<JobInfo>('POST', `/api/projects/${project.id}/shots`, { project, assetId }),
   aiAssign: (project: Project) => call<JobInfo>('POST', `/api/projects/${project.id}/ai-assign`, { project }),
   setGeminiKey: (key: string | null) => call<{ geminiKeySource: 'env' | 'file' | null }>('PUT', '/api/settings/gemini-key', { key }),
   geminiModels: () => call<string[]>('GET', '/api/gemini/models'),

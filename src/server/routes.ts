@@ -7,7 +7,7 @@ import { speechChunks, tokensFromChunks } from '../shared/chunks.js';
 import { alignChunkTokens } from '../shared/align.js';
 import { geminiTranscribe, listGeminiModels, resolveGeminiModel } from './asr/gemini.js';
 import { anthropicKey, anthropicKeySource, geminiKey, geminiKeySource, setAnthropicKey, setGeminiKey } from './secrets.js';
-import { aiAssign } from './ai/assign.js';
+import { aiAssign, videoShots } from './ai/assign.js';
 import { outToSrc } from '../shared/timemap.js';
 import { hintTerms, mergeHints } from '../shared/script.js';
 import { buildPreview, importUpload, removeAssetFiles } from './assets.js';
@@ -291,6 +291,33 @@ router.post('/api/projects/:id/ai-assign', async (req, res) => {
     runner: (ctx) => aiAssign({ project, apiKey, signal: ctx.signal, progress: ctx.progress }),
   });
   sendJson(res, 200, job);
+});
+
+/** 動画の場面一覧(手で場面を選ぶとき用)。場面の検出に時間がかかることがあるのでジョブにする */
+router.post('/api/projects/:id/shots', async (req, res) => {
+  const id = assertId(req.params.id!);
+  const body = await readJson<{ project: Project; assetId: string }>(req, 50 * 1024 * 1024);
+  const project = body.project;
+  if (!project || project.id !== id) throw new HttpError(400, 'プロジェクトが一致しません');
+  const asset = project.assets.find((a) => a.id === body.assetId && a.status === 'ok');
+  if (!asset || asset.kind !== 'video') throw new HttpError(400, '動画の素材を選んでください');
+  const job = enqueue({
+    type: 'shots',
+    label: `${asset.name} の場面一覧`,
+    projectId: id,
+    queue: 'analysis',
+    runner: async (ctx) => ({ assetId: asset.id, shots: await videoShots(project, asset, ctx.signal, ctx.progress) }),
+  });
+  sendJson(res, 200, job);
+});
+
+router.get('/api/projects/:id/aiframes/:name', async (req, res) => {
+  const id = assertId(req.params.id!);
+  const name = req.params.name!;
+  if (!/^[A-Za-z0-9_-]+-[0-9.]+\.jpg$/.test(name)) throw new HttpError(400, 'ファイル名が正しくありません');
+  const file = sub(id, 'work', 'aiframes', name);
+  if (!fs.existsSync(file)) throw new HttpError(404, '画像がありません');
+  await sendFile(req, res, file, { type: 'image/jpeg' });
 });
 
 router.put('/api/settings/gemini-key', async (req, res) => {
