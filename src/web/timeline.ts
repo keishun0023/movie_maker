@@ -11,7 +11,7 @@ import { moveCaptionJoint, toggleKeepCandidate } from './actions.js';
 const TRACK = { ruler: 18, wave: 64, scenes: 30, caps: 30 };
 const COLORS = ['#3b6ea8', '#6a4fa3', '#2f8a6d', '#a3643a', '#8a3b5c', '#4f7f2f'];
 
-type DragKind = { type: 'scene-boundary'; index: number } | { type: 'cap-start' | 'cap-end'; id: string } | { type: 'cap-joint'; a: string; b: string } | { type: 'seek' } | null;
+type DragKind = { type: 'scene-boundary'; index: number } | { type: 'cap-start' | 'cap-end'; id: string } | { type: 'cap-joint'; a: string; b: string; offset?: number } | { type: 'seek' } | null;
 
 export class TimelineView {
   readonly root: HTMLElement;
@@ -266,11 +266,16 @@ export class TimelineView {
       const x0Of = (c: (typeof caps)[number]) => (src ? this.xOf(capById.get(c.id)!.srcStart) : this.xOf(c.outStart));
       const x1Of = (c: (typeof caps)[number]) => (src ? this.xOf(capById.get(c.id)!.srcEnd) : this.xOf(c.outEnd));
       // 続いているテロップのつなぎ目は、両方いっしょに動かす(語も入れ替わる)
+      // (間が短い(0.4秒未満)・画面上で離れていない2つは、続いているとみなす。隙間の中や両端の近くをつかめる)
       for (let i = 0; i < caps.length - 1; i++) {
         const a = caps[i]!;
         const b = caps[i + 1]!;
         const xa = x1Of(a);
-        if (Math.abs(xa - x0Of(b)) < 4 && Math.abs(x - xa) < 6) return { kind: { type: 'cap-joint', a: a.id, b: b.id }, select: { kind: 'caption', id: x < xa ? a.id : b.id } };
+        const xb = x0Of(b);
+        const ca = capById.get(a.id)!;
+        const cb = capById.get(b.id)!;
+        const near = xb - xa < 4 || cb.srcStart - ca.srcEnd < 0.4 * SR;
+        if (near && x > Math.min(xa, xb) - 6 && x < Math.max(xa, xb) + 6) return { kind: { type: 'cap-joint', a: a.id, b: b.id }, select: { kind: 'caption', id: x < (xa + xb) / 2 ? a.id : b.id } };
       }
       for (const c of caps) {
         if (Math.abs(x - x0Of(c)) < 5) return { kind: { type: 'cap-start', id: c.id }, select: { kind: 'caption', id: c.id } };
@@ -297,6 +302,14 @@ export class TimelineView {
     }
     if (hit.select) store.setUi({ selection: hit.select, rightTab: 'selected' }, 'select');
     this.drag = hit.kind;
+    if (hit.kind?.type === 'cap-joint') {
+      // つかんだ位置とつなぎ目のずれを覚えておく(つかんだ瞬間につなぎ目が飛ばないように)
+      const a = store.p.captions.find((c) => c.id === (hit.kind as { a: string }).a);
+      const b = store.p.captions.find((c) => c.id === (hit.kind as { b: string }).b);
+      const x = e.clientX - r.left;
+      const s = store.state.ui.timelineView === 'source' ? this.tOf(x) : outToSrc(tl, Math.min(tl.outSamples, this.tOf(x)));
+      if (a && b) this.drag = { ...hit.kind, offset: s - (a.srcEnd + b.srcStart) / 2 };
+    }
     if (hit.kind?.type === 'seek') {
       const x = e.clientX - r.left;
       const t = store.state.ui.timelineView === 'source' ? srcToOut(tl, this.tOf(x)) : this.tOf(x);
@@ -348,7 +361,7 @@ export class TimelineView {
         { coalesce: 'scene-boundary-' + d.index },
       );
     } else if (d.type === 'cap-joint') {
-      moveCaptionJoint(d.a, d.b, sAt);
+      moveCaptionJoint(d.a, d.b, sAt - (d.offset ?? 0));
     } else if (d.type === 'cap-start' || d.type === 'cap-end') {
       // 隣のテロップには重ならないようにする
       const sorted = [...store.p.captions].sort((a, b) => a.srcStart - b.srcStart);

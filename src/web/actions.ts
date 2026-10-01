@@ -415,27 +415,41 @@ export function moveCaptionJoint(aId: string, bId: string, at: number) {
   const a = p.captions.find((c) => c.id === aId);
   const b = p.captions.find((c) => c.id === bId);
   if (!a || !b) return;
+  // 2つの間の隙間はそのままにして、つなぎ目(隙間の中心)を動かす。位置は語の切れ目に吸着させず自由に動かす
+  const gap = Math.max(0, b.srcStart - a.srcEnd);
   const minLen = 0.15 * SR;
-  let s = Math.max(a.srcStart + minLen, Math.min(b.srcEnd - minLen, at));
-  let na: Caption = { ...a, srcEnd: s, timingEdited: true };
-  let nb: Caption = { ...b, srcStart: s, timingEdited: true };
+  const s = Math.round(Math.max(a.srcStart + minLen + gap / 2, Math.min(b.srcEnd - minLen - gap / 2, at)));
+  let na: Caption = { ...a, srcEnd: Math.round(s - gap / 2), timingEdited: true };
+  let nb: Caption = { ...b, srcStart: Math.round(s + gap / 2), timingEdited: true };
   const ids = new Set([...a.tokenIds, ...b.tokenIds]);
   const toks = (p.transcript?.tokens ?? []).filter((t) => ids.has(t.id)).sort((x, y) => x.start - y.start);
-  if (toks.length >= 2) {
-    // 語の切れ目に合わせる(どちらにも1語以上残す)
-    let k = toks.findIndex((t) => (t.start + t.end) / 2 >= s);
-    if (k < 0) k = toks.length;
-    k = Math.max(1, Math.min(toks.length - 1, k));
-    const ta = toks.slice(0, k);
-    const tb = toks.slice(k);
-    const prevEnd = ta[ta.length - 1]!.end;
-    const nextStart = tb[0]!.start;
-    s = Math.max(a.srcStart + minLen, Math.min(b.srcEnd - minLen, Math.min(Math.max(s, prevEnd), nextStart)));
-    const rawA = ta.map((t) => t.text).join('').replace(/^\s+/, '');
-    const rawB = tb.map((t) => t.text).join('').replace(/^\s+/, '');
-    const textOf = (raw: string) => applyTextFixes(displayFromRaw(raw), p.textFixes);
-    na = { ...na, srcEnd: s, tokenIds: ta.map((t) => t.id), rawText: rawA, ...(a.textEdited ? {} : { text: textOf(rawA) }) };
-    nb = { ...nb, srcStart: s, tokenIds: tb.map((t) => t.id), rawText: rawB, ...(b.textEdited ? {} : { text: textOf(rawB) }) };
+  if (toks.length) {
+    // 文字ごとの時刻(語の時間を文字数で割る)で、つなぎ目より前の文字を前のテロップ、後ろの文字を後ろのテロップにする
+    const chars: { ch: string; mid: number; tok: string }[] = [];
+    for (const t of toks) {
+      const cs = Array.from(t.text);
+      cs.forEach((ch, i) => chars.push({ ch, mid: t.start + ((t.end - t.start) * (i + 0.5)) / cs.length, tok: t.id }));
+    }
+    const visible = (i: number) => chars[i]!.ch.trim() !== '';
+    let k = chars.findIndex((c) => c.mid >= s);
+    if (k < 0) k = chars.length;
+    // どちらにも1文字以上残す
+    const firstVis = chars.findIndex((_, i) => visible(i));
+    let lastVis = -1;
+    for (let i = chars.length - 1; i >= 0; i--) if (visible(i)) { lastVis = i; break; }
+    if (firstVis >= 0 && lastVis > firstVis) {
+      k = Math.max(firstVis + 1, Math.min(lastVis, k));
+      const ca = chars.slice(0, k);
+      const cb = chars.slice(k);
+      const rawA = ca.map((c) => c.ch).join('').replace(/^\s+/, '');
+      const rawB = cb.map((c) => c.ch).join('').replace(/^\s+/, '');
+      const textOf = (raw: string) => applyTextFixes(displayFromRaw(raw), p.textFixes);
+      // 語の途中で分けたときは、その語は両方のテロップに属する
+      const idsA = [...new Set(ca.map((c) => c.tok))];
+      const idsB = [...new Set(cb.map((c) => c.tok))];
+      na = { ...na, tokenIds: idsA, rawText: rawA, ...(a.textEdited ? {} : { text: textOf(rawA) }) };
+      nb = { ...nb, tokenIds: idsB, rawText: rawB, ...(b.textEdited ? {} : { text: textOf(rawB) }) };
+    }
   }
   store.commit((pp) => ({ ...pp, captions: pp.captions.map((c) => (c.id === aId ? na : c.id === bId ? nb : c)) }), { coalesce: `cap-joint-${aId}` });
 }
