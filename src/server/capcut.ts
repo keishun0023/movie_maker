@@ -397,6 +397,70 @@ function safeName(s: string): string {
 
 // ---- 書き出し本体 ----
 
+/** 見本プロジェクトの形式・版の印を引き継いで、作った中身で本体ファイルと draft_meta_info.json を書く */
+async function writeDraftFromSeed(seed: Seed, b: DraftBuilder, dir: string, draftsDir: string, draftName: string, totalUs: number, W: number, H: number, fps: number): Promise<{ draftId: string; mainFile: string; nowMs: number }> {
+  // 6. 本体ファイル(見本プロジェクトの形式・版の印を引き継ぎ、中身を入れ替える)
+  const draftId = uuid();
+  const nowMs = Date.now();
+  const draft = structuredClone(seed.draft);
+  for (const [k, v] of Object.entries(draft)) {
+    if ((k === 'materials' || k === 'keyframes') && v && typeof v === 'object' && !Array.isArray(v)) {
+      for (const kk of Object.keys(v as Json)) if (Array.isArray((v as Json)[kk])) (v as Json)[kk] = [];
+    } else if (Array.isArray(v)) draft[k] = [];
+    else if (k === 'cover' || k === 'retouch_cover' || k === 'time_marks') draft[k] = null;
+  }
+  const materials = (draft.materials ?? {}) as Record<string, Json[]>;
+  for (const [k, list] of Object.entries(b.materials)) materials[k] = [...(materials[k] ?? []), ...list];
+  draft.materials = materials;
+  draft.tracks = b.tracks.filter((t) => (t.segments as Json[]).length > 0);
+  draft.id = draftId;
+  draft.name = draftName;
+  draft.duration = totalUs;
+  draft.fps = fps;
+  const canvas = (draft.canvas_config ?? {}) as Json;
+  draft.canvas_config = { ...canvas, width: W, height: H, ratio: canvasRatio(W, H) };
+  if (typeof draft.create_time === 'number') draft.create_time = Math.floor(nowMs / 1000);
+  if (typeof draft.update_time === 'number') draft.update_time = Math.floor(nowMs / 1000);
+  if (typeof draft.static_cover_image_path === 'string') draft.static_cover_image_path = '';
+  for (const f of seed.files) {
+    const raw = readJson(path.join(seed.dir, f));
+    const out = raw ? wrapTimeline(raw, draft) : null;
+    if (out) await fsp.writeFile(path.join(dir, f), JSON.stringify(out), 'utf8');
+  }
+  const mainFile = path.join(dir, seed.files.includes('draft_info.json') ? 'draft_info.json' : seed.files[0]!);
+
+  // 7. draft_meta_info.json(取り込んだ素材の登録を含む)
+  const meta: Json = structuredClone(seed.meta ?? {});
+  for (const k of Object.keys(meta)) {
+    if (/cloud|enterprise|purchase|deeplink|template_id|tutorial/i.test(k)) {
+      const v = meta[k];
+      meta[k] = typeof v === 'boolean' ? false : typeof v === 'number' ? 0 : typeof v === 'string' ? '' : Array.isArray(v) ? [] : v;
+    }
+  }
+  const groups: Json[] = Array.isArray(meta.draft_materials) ? (meta.draft_materials as Json[]).map((g) => ({ ...g, value: [] })) : [];
+  const g0 = groups.find((g) => g.type === 0);
+  if (g0) g0.value = b.metaEntries;
+  else groups.unshift({ type: 0, value: b.metaEntries });
+  Object.assign(meta, {
+    draft_cover: '',
+    draft_fold_path: dir,
+    draft_id: draftId,
+    draft_json_file: mainFile,
+    draft_materials: groups,
+    draft_materials_copied_info: [],
+    draft_name: draftName,
+    draft_root_path: draftsDir,
+    draft_segment_extra_info: [],
+    draft_timeline_materials_size_: 0,
+    tm_draft_create: nowMs * 1000,
+    tm_draft_modified: nowMs * 1000,
+    tm_draft_removed: 0,
+    tm_duration: totalUs,
+  });
+  await fsp.writeFile(path.join(dir, 'draft_meta_info.json'), JSON.stringify(meta), 'utf8');
+  return { draftId, mainFile, nowMs };
+}
+
 /** CapCut のプロジェクト一覧(root_meta_info.json)に登録する(元のファイルは .bak に残す) */
 async function registerDraft(draftsDir: string, dir: string, draftId: string, draftName: string, mainFile: string, totalUs: number, nowMs: number): Promise<void> {
   const indexFile = path.join(draftsDir, 'root_meta_info.json');
@@ -819,67 +883,9 @@ export async function exportCapcut(p: Project, draftsDir: string, ctx: JobContex
       notes.push('テロップは CapCut の文字で入れました。文字の大きさ・縁取りは近い値にしてありますが、見た目が違う場合は CapCut でまとめて調整するか、「見た目そのまま(画像)」で書き出してください。');
     }
 
-    // 6. 本体ファイル(見本プロジェクトの形式・版の印を引き継ぎ、中身を入れ替える)
+    // 6〜7. 本体ファイルと draft_meta_info.json(見本プロジェクトの形式・版の印を引き継ぎ、中身を入れ替える)
     ctx.progress(0.9, 'プロジェクトファイルを書き込んでいます');
-    const draftId = uuid();
-    const nowMs = Date.now();
-    const draft = structuredClone(seed.draft);
-    for (const [k, v] of Object.entries(draft)) {
-      if ((k === 'materials' || k === 'keyframes') && v && typeof v === 'object' && !Array.isArray(v)) {
-        for (const kk of Object.keys(v as Json)) if (Array.isArray((v as Json)[kk])) (v as Json)[kk] = [];
-      } else if (Array.isArray(v)) draft[k] = [];
-      else if (k === 'cover' || k === 'retouch_cover' || k === 'time_marks') draft[k] = null;
-    }
-    const materials = (draft.materials ?? {}) as Record<string, Json[]>;
-    for (const [k, list] of Object.entries(b.materials)) materials[k] = [...(materials[k] ?? []), ...list];
-    draft.materials = materials;
-    draft.tracks = b.tracks.filter((t) => (t.segments as Json[]).length > 0);
-    draft.id = draftId;
-    draft.name = draftName;
-    draft.duration = totalUs;
-    draft.fps = fps;
-    const canvas = (draft.canvas_config ?? {}) as Json;
-    draft.canvas_config = { ...canvas, width: W, height: H, ratio: canvasRatio(W, H) };
-    if (typeof draft.create_time === 'number') draft.create_time = Math.floor(nowMs / 1000);
-    if (typeof draft.update_time === 'number') draft.update_time = Math.floor(nowMs / 1000);
-    if (typeof draft.static_cover_image_path === 'string') draft.static_cover_image_path = '';
-    for (const f of seed.files) {
-      const raw = readJson(path.join(seed.dir, f));
-      const out = raw ? wrapTimeline(raw, draft) : null;
-      if (out) await fsp.writeFile(path.join(dir, f), JSON.stringify(out), 'utf8');
-    }
-    const mainFile = path.join(dir, seed.files.includes('draft_info.json') ? 'draft_info.json' : seed.files[0]!);
-
-    // 7. draft_meta_info.json(取り込んだ素材の登録を含む)
-    const meta: Json = structuredClone(seed.meta ?? {});
-    for (const k of Object.keys(meta)) {
-      if (/cloud|enterprise|purchase|deeplink|template_id|tutorial/i.test(k)) {
-        const v = meta[k];
-        meta[k] = typeof v === 'boolean' ? false : typeof v === 'number' ? 0 : typeof v === 'string' ? '' : Array.isArray(v) ? [] : v;
-      }
-    }
-    const groups: Json[] = Array.isArray(meta.draft_materials) ? (meta.draft_materials as Json[]).map((g) => ({ ...g, value: [] })) : [];
-    const g0 = groups.find((g) => g.type === 0);
-    if (g0) g0.value = b.metaEntries;
-    else groups.unshift({ type: 0, value: b.metaEntries });
-    Object.assign(meta, {
-      draft_cover: '',
-      draft_fold_path: dir,
-      draft_id: draftId,
-      draft_json_file: mainFile,
-      draft_materials: groups,
-      draft_materials_copied_info: [],
-      draft_name: draftName,
-      draft_root_path: draftsDir,
-      draft_segment_extra_info: [],
-      draft_timeline_materials_size_: 0,
-      tm_draft_create: nowMs * 1000,
-      tm_draft_modified: nowMs * 1000,
-      tm_draft_removed: 0,
-      tm_duration: totalUs,
-    });
-    await fsp.writeFile(path.join(dir, 'draft_meta_info.json'), JSON.stringify(meta), 'utf8');
-
+    const { draftId, mainFile, nowMs } = await writeDraftFromSeed(seed, b, dir, draftsDir, draftName, totalUs, W, H, fps);
     // 8. CapCut のプロジェクト一覧(root_meta_info.json)に登録する
     await registerDraft(draftsDir, dir, draftId, draftName, mainFile, totalUs, nowMs);
     ctx.progress(1, '完了');
@@ -1193,4 +1199,107 @@ export async function exportCapcutInto(p: Project, draftsDir: string, ctx: JobCo
     await fsp.rm(dir, { recursive: true, force: true }).catch(() => undefined);
     throw e;
   }
+}
+
+// ---- CapCut の声で台本を読み上げる(台本 → 読み上げ用の下書き → CapCut で読み上げ → 音声を読み込む) ----
+
+async function seedFor(draftsDir: string): Promise<Seed> {
+  if (!fs.existsSync(draftsDir)) {
+    throw new Error(`CapCut の下書きフォルダが見つかりません: ${draftsDir}\nCapCut をインストールして一度起動するか、CapCut の「設定 → 下書きの場所」に表示される場所を指定してください。`);
+  }
+  if (await capcutRunning()) throw new Error('CapCut が起動しています。CapCut を終了してから、もう一度押してください。');
+  const found = findSeed(draftsDir);
+  if (!found.seed) {
+    throw new Error(
+      found.projects > 0
+        ? `下書きフォルダのプロジェクト(${found.projects}件)を読み取れませんでした(暗号化されている可能性があります)。`
+        : 'CapCut のプロジェクトが1つもありません。CapCut で「新しいプロジェクト」を1つ作ってそのまま閉じ、CapCut を終了してから、もう一度押してください。',
+    );
+  }
+  return found.seed;
+}
+
+/** 台本の行を文字クリップとして並べた「読み上げ用」の下書きを作る(CapCut で全部選んで「テキスト読み上げ」する) */
+export async function createTtsDraft(p: Project, lines: string[], draftsDir: string, ctx: JobContext): Promise<CapcutResult> {
+  const seed = await seedFor(draftsDir);
+  const { width: W, height: H, fps } = p.export;
+  const baseName = safeName(`${p.name} 読み上げ用`);
+  let draftName = baseName;
+  for (let i = 2; fs.existsSync(path.join(draftsDir, draftName)); i++) draftName = `${baseName} (${i})`;
+  const dir = path.join(draftsDir, draftName);
+  await fsp.mkdir(dir, { recursive: true });
+  try {
+    const b = new DraftBuilder(dir);
+    const texts = b.track('text', '台本');
+    let t = 0;
+    for (const line of lines) {
+      // 読み上げにかかりそうな長さ(CapCut が読み上げると、音声の長さに合わせて並ぶ)
+      const durUs = Math.round(Math.max(1, Math.min(10, Array.from(line).length * 0.17)) * 1e6);
+      const mat = textMaterial(line, { ...p.style, maxWidth: W * 0.9 }, W);
+      b.add('texts', mat);
+      const seg = segment(mat.id as string, t, durUs, null, { extra_material_refs: b.companions('text'), render_index: 14000 });
+      seg.clip = { alpha: 1, flip: { horizontal: false, vertical: false }, rotation: 0, scale: { x: 1, y: 1 }, transform: { x: 0, y: 0 } };
+      texts.push(seg);
+      t += durUs;
+    }
+    ctx.progress(0.8, 'プロジェクトファイルを書き込んでいます');
+    const { draftId, mainFile, nowMs } = await writeDraftFromSeed(seed, b, dir, draftsDir, draftName, t, W, H, fps);
+    await registerDraft(draftsDir, dir, draftId, draftName, mainFile, t, nowMs);
+    ctx.progress(1, '完了');
+    return { draftName, draftDir: dir, appVersion: seed.version, notes: [] };
+  } catch (e) {
+    await fsp.rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    throw e;
+  }
+}
+
+export interface TtsLine {
+  text: string;
+  /** つなげた音声の中での位置(マイクロ秒) */
+  startUs: number;
+  endUs: number;
+}
+
+/**
+ * CapCut で読み上げた下書きから、行ごとの読み上げ音声を順につなげて1本の音声にする。
+ * 行の間には少し無音を入れる(このアプリの無音カットで、好みの間に詰める)。
+ */
+export async function renderTtsAudio(draft: Json, dir: string, outFile: string, ctx: JobContext): Promise<{ lines: TtsLine[]; notes: string[] }> {
+  const d = parseDraft(draft, dir);
+  if (d.audio.length === 0) throw new Error('まだ読み上げの音声がありません。CapCut でこのプロジェクトを開き、文字クリップを全部選んで「テキスト読み上げ」をしてから、CapCut を終了してください。');
+  if (d.captions.length === 0) throw new Error('台本の文字クリップが見つかりません。');
+  // 行ごとに、その行の位置から始まる音声の区間を集める
+  const lineAudio: DraftAudioPiece[][] = d.captions.map(() => []);
+  for (const a of d.audio) {
+    let best = 0;
+    let bestD = Infinity;
+    d.captions.forEach((c, i) => {
+      const dist = a.dstStartUs >= c.startUs - 300_000 ? Math.abs(a.dstStartUs - c.startUs) : Infinity;
+      if (dist < bestD) {
+        bestD = dist;
+        best = i;
+      }
+    });
+    if (bestD === Infinity) best = 0;
+    lineAudio[best]!.push(a);
+  }
+  const GAP_US = 350_000;
+  const pieces: DraftAudioPiece[] = [];
+  const lines: TtsLine[] = [];
+  const notes: string[] = [];
+  let cursor = 0;
+  d.captions.forEach((c, i) => {
+    const list = lineAudio[i]!;
+    if (!list.length) {
+      notes.push(`「${c.text.slice(0, 20)}」の読み上げ音声が見つかりませんでした(この行はテロップだけになります)。`);
+      return;
+    }
+    const first = Math.min(...list.map((a) => a.dstStartUs));
+    const last = Math.max(...list.map((a) => a.dstStartUs + a.dstDurUs));
+    for (const a of list) pieces.push({ ...a, dstStartUs: cursor + (a.dstStartUs - first) });
+    lines.push({ text: c.text, startUs: cursor, endUs: cursor + (last - first) });
+    cursor += last - first + GAP_US;
+  });
+  const n = await renderDraftAudio({ ...d, audio: pieces, durationUs: cursor }, outFile, ctx);
+  return { lines, notes: [...notes, ...n] };
 }

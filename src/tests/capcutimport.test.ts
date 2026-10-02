@@ -152,3 +152,45 @@ test('CapCut の下書きに素材を加えた複製を作る(元の下書きは
   void autoEdit;
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+test('CapCut で読み上げた行ごとの音声を、行の順につなげて1本にする(行の間は少し空ける)', async () => {
+  const { renderTtsAudio } = await import('../server/capcut.js');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'captts-'));
+  const dir = await makeDraft(root);
+  // 読み上げ用の下書き: 文字クリップ 2 つ(0s, 3s)と、それぞれの位置から始まる読み上げ音声(0.8s・0.5s)
+  const draft = {
+    materials: {
+      texts: [
+        { id: 'l1', content: JSON.stringify({ text: '一行目' }) },
+        { id: 'l2', content: JSON.stringify({ text: '二行目' }) },
+      ],
+      audios: [
+        { id: 'v1', path: path.join(dir, 'narr.wav'), type: 'text_to_audio' },
+        { id: 'v2', path: path.join(dir, 'narr.wav'), type: 'text_to_audio' },
+      ],
+    },
+    tracks: [
+      { type: 'text', segments: [{ material_id: 'l1', target_timerange: { start: 0, duration: 2 * US } }, { material_id: 'l2', target_timerange: { start: 3 * US, duration: 2 * US } }] },
+      {
+        type: 'audio',
+        segments: [
+          { material_id: 'v1', source_timerange: { start: 0, duration: 0.8 * US }, target_timerange: { start: 0, duration: 0.8 * US } },
+          { material_id: 'v2', source_timerange: { start: 1 * US, duration: 0.5 * US }, target_timerange: { start: 3 * US, duration: 0.5 * US } },
+        ],
+      },
+    ],
+  };
+  const out = path.join(root, 'tts.wav');
+  const r = await renderTtsAudio(draft, dir, out, ctx);
+  assert.deepEqual(r.lines.map((l) => [l.text, l.startUs, l.endUs]), [
+    ['一行目', 0, 0.8 * US],
+    ['二行目', 1.15 * US, 1.65 * US],
+  ]);
+  const pcm = await readWav(out);
+  assert.equal(pcm.data.length / 2, Math.round(2.0 * SR));
+  // 行の間(0.85〜1.1s)は無音
+  let e = 0;
+  for (let i = Math.round(0.85 * SR); i < Math.round(1.1 * SR); i++) e += Math.abs(pcm.data[i * 2]!);
+  assert.equal(e, 0);
+  fs.rmSync(root, { recursive: true, force: true });
+});

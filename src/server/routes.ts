@@ -15,7 +15,7 @@ import { adoptLocalFile, buildPreview, importUpload, removeAssetFiles } from './
 import { WhisperCppAdapter } from './asr/whisperCpp.js';
 import { BUILD_INFO, PRESETS_FILE } from './config.js';
 import { cleanupDir, exportBaseName, runExport, type CaptionImage } from './export.js';
-import { defaultDraftsDir, exportCapcut, exportCapcutInto, type CapcutCaptionImage, findSeed, listCapcutDrafts, parseDraft, readDraftTimeline, renderDraftAudio } from './capcut.js';
+import { createTtsDraft, defaultDraftsDir, exportCapcut, exportCapcutInto, renderTtsAudio, type CapcutCaptionImage, findSeed, listCapcutDrafts, parseDraft, readDraftTimeline, renderDraftAudio } from './capcut.js';
 import { fontBytes, fontEntry, listFonts, missingChars, registerProjectFont, scanFonts } from './fonts.js';
 import { readBody, readJson, Router, sendFile, sendJson } from './http.js';
 import { cancelJob, enqueue, getJob, listJobs, retryJob } from './jobs.js';
@@ -641,6 +641,44 @@ router.post('/api/projects/:id/capcut', async (req, res) => {
     // CapCut から読み込んだプロジェクトは、元の下書きに素材を加えた複製を作る
     runner: (ctx) => (project.capcut ? exportCapcutInto(project, dir, ctx) : exportCapcut(project, dir, ctx, capImages)),
     cleanup: cleanupDir(workDir),
+  });
+  sendJson(res, 200, job);
+});
+
+/** 台本から、CapCut で読み上げるための下書きを作る */
+router.post('/api/projects/:id/capcut-tts', async (req, res) => {
+  const id = assertId(req.params.id!);
+  const body = await readJson<{ project: Project; lines: string[] }>(req, 5 * 1024 * 1024);
+  const project = body.project;
+  if (!project || project.id !== id) throw new HttpError(400, 'プロジェクトが一致しません');
+  const lines = (Array.isArray(body.lines) ? body.lines : []).map((l) => String(l).trim()).filter(Boolean).slice(0, 500);
+  if (!lines.length) throw new HttpError(400, '台本がありません');
+  const dir = (project.export.capcutDir ?? '').trim() || defaultDraftsDir();
+  if (!path.isAbsolute(dir)) throw new HttpError(400, 'CapCut の下書きフォルダは絶対パスで指定してください');
+  const job = enqueue({ type: 'capcut-tts', label: 'CapCut の読み上げ用プロジェクトを作成', projectId: id, queue: 'export', runner: (ctx) => createTtsDraft(project, lines, dir, ctx) });
+  sendJson(res, 200, job);
+});
+
+/** CapCut で読み上げた音声を読み込む(行ごとの音声をつなげて素材に追加) */
+router.post('/api/projects/:id/capcut-tts-import', async (req, res) => {
+  const id = assertId(req.params.id!);
+  const body = await readJson<{ draftDir: string }>(req, 64 * 1024);
+  const draftDir = String(body.draftDir ?? '');
+  if (!path.isAbsolute(draftDir) || !fs.existsSync(draftDir)) throw new HttpError(400, '読み上げ用の CapCut プロジェクトが見つかりません(CapCut で削除や名前の変更をしていないか確認してください)');
+  const t = readDraftTimeline(draftDir);
+  if (!t) throw new HttpError(400, 'この CapCut のプロジェクトは読み取れませんでした(暗号化されている可能性があります)');
+  const job = enqueue({
+    type: 'capcut-tts-import',
+    label: 'CapCut の読み上げ音声を読み込み',
+    projectId: id,
+    queue: 'export',
+    runner: async (ctx) => {
+      const tmp = path.join(os.tmpdir(), `tdm-tts-${crypto.randomBytes(4).toString('hex')}.wav`);
+      const r = await renderTtsAudio(t.draft, draftDir, tmp, ctx);
+      const asset = await adoptLocalFile(id, tmp, `読み上げ(CapCut).wav`);
+      ctx.progress(1, '完了');
+      return { asset, lines: r.lines, notes: r.notes };
+    },
   });
   sendJson(res, 200, job);
 });

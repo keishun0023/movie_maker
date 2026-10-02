@@ -335,6 +335,8 @@ export interface Project {
    * このアプリでは無音カット・文字起こし・速さ・間の調整をしない。書き出しは元の下書きに素材を加えた複製を作る
    */
   capcut?: { dir: string; name: string; draftId: string; mtime: number; importedAt: string };
+  /** CapCut の声で台本を読み上げるために作った「読み上げ用」の下書き */
+  capcutTts?: { dir: string; name: string; createdAt: string; lines: number };
   /** 文字起こしの直し(「白球」→「白玉」など)。テロップを作り直すたびに当てはめ、認識のヒントにも使う */
   textFixes?: TextFix[];
   /** テロップの長さ: normal(2行まで) / short(1行・短く区切る) */

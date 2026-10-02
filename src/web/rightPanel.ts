@@ -24,6 +24,9 @@ import {
   shotCache,
   rebuildCaptions,
   importFromCapcut,
+  createCapcutTts,
+  importCapcutTts,
+  scriptLines,
   reapplyLayout,
   runAiAssign,
   applyAutoMotions,
@@ -150,10 +153,12 @@ function importView(): HTMLElement {
       : null,
     jobsBox(['narration', 'preview']),
   );
-  const scriptArea = h('textarea', { rows: 5, placeholder: '(任意)元の台本を貼り付けると、固有名詞・数字の認識のヒントと表記確認に使います。台本の文章をそのまま字幕に入れることはしません。' });
+  const scriptArea = h('textarea', { rows: 5, placeholder: '台本を貼り付けます。CapCut の声で読み上げるときは、1行が1つの読み上げとテロップになります(「台本 / 素材」の表をそのまま貼っても可)。手持ちの音声を使うときは、固有名詞・数字の認識のヒントに使います。' });
   scriptArea.value = p.script;
   scriptArea.addEventListener('input', () => store.commit((pp) => ({ ...pp, script: scriptArea.value }), { coalesce: 'script', skip: 'right' }));
-  const scriptSection = section('台本(任意)', scriptArea, checkbox(p.useScriptHints, '台本の語句を文字起こしのヒントに使う', (v) => store.commit((pp) => ({ ...pp, useScriptHints: v }))));
+  // 貼り付けたら、台本の行数などをすぐ表示する
+  scriptArea.addEventListener('change', () => setTimeout(() => store.emit('right'), 0));
+  const scriptSection = section('台本', scriptArea, checkbox(p.useScriptHints, '台本の語句を文字起こしのヒントに使う', (v) => store.commit((pp) => ({ ...pp, useScriptHints: v }))));
   const envSection = sys
     ? section(
         'このMacの状態',
@@ -167,7 +172,33 @@ function importView(): HTMLElement {
         ),
       )
     : null;
-  return h('div', { class: 'panel-body' }, capcutImportSection(p), narrSection, scriptSection, envSection, button('次へ: 自動編集 →', () => store.setUi({ step: 2 }), { class: 'next', disabled: !narr }));
+  return h('div', { class: 'panel-body' }, scriptSection, capcutTtsSection(p), narrSection, capcutImportSection(p), envSection, button('次へ: 自動編集 →', () => store.setUi({ step: 2 }), { class: 'next', disabled: !narr }));
+}
+
+/** CapCut の声で台本を読み上げる */
+function capcutTtsSection(p: Project): HTMLElement {
+  const lines = scriptLines(p);
+  const tts = p.capcutTts;
+  return section(
+    'CapCut の声で台本を読み上げる',
+    h('p', { class: 'hint' }, '上の台本(1行が1つの読み上げ)から、CapCut で読み上げるためのプロジェクトを作ります。CapCut で声を選んで読み上げたら、その音声を読み込んで、このアプリで無音カット・テロップ・素材の割り当て・プレビューをします。'),
+    h(
+      'ol',
+      { class: 'steps' },
+      h('li', null, 'CapCut を終了した状態で「読み上げ用のプロジェクトを作る」を押す'),
+      h('li', null, 'CapCut で「', tts ? tts.name : '(名前) 読み上げ用', '」を開き、文字クリップを全部選んで(⌘A)「テキスト読み上げ」で声を選ぶ → CapCut を終了'),
+      h('li', null, '「読み上げた音声を読み込む」を押す'),
+    ),
+    lines.length ? h('p', { class: 'hint' }, `台本 ${lines.length} 行`) : h('p', { class: 'warn' }, '上の「台本」に読み上げる文章を入れてください(スプレッドシートの「台本 / 素材」の表をそのまま貼っても大丈夫です)。'),
+    h(
+      'div',
+      { class: 'row gap wrap' },
+      button(tts ? '読み上げ用のプロジェクトを作り直す' : '読み上げ用のプロジェクトを作る', () => void createCapcutTts(), { class: tts ? '' : 'primary', disabled: !lines.length }),
+      button('読み上げた音声を読み込む', () => void importCapcutTts(), { class: tts ? 'primary' : '', disabled: !tts }),
+    ),
+    tts ? h('p', { class: 'hint' }, `読み上げ用: ${tts.name}(${tts.lines} 行)`) : null,
+    jobsBox(['capcut-tts', 'capcut-tts-import', 'narration']),
+  );
 }
 
 // CapCut の下書き一覧(読み込み用)

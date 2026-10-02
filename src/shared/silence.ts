@@ -133,7 +133,8 @@ export function flagTokens(tokens: Token[], a: AnalysisData, sensitivityDb = 0):
     const ratio = silentRatio(a, t.start, Math.max(t.end, t.start + a.frameSamples), st.threshold);
     const level = meanDb(a, t.start, Math.max(t.end, t.start + a.frameSamples));
     const nearFloor = level < st.floor + 6;
-    if (ratio > 0.9 && nearFloor) flags.add('silence');
+    // 時刻を文字量から推定した語(Gemini・読み上げの台本)は、文字は正しく時刻だけがずれていることが多いので、無音の印で消さない
+    if (ratio > 0.9 && nearFloor && t.timing !== 'chunk') flags.add('silence');
     if (t.p < 0.25) flags.add('lowConf');
     return { ...t, flags: [...flags] };
   }).map((t, i, arr) => {

@@ -1,5 +1,8 @@
 // 画面から呼ぶ操作(取り込み・自動編集・シーン/テロップ編集・書き出し)。
-import { SR, type Asset, type BgPlacement, type Caption, type JobInfo, type Project, type Scene, type Transcript } from '../shared/types.js';
+import { SR, type AnalysisData, type Asset, type BgPlacement, type Caption, type JobInfo, type Project, type Scene, type Token, type Transcript } from '../shared/types.js';
+import { parseReferenceTable } from '../shared/reference.js';
+import { levelStats } from '../shared/silence.js';
+import { speakWeight, splitJaText } from '../shared/chunks.js';
 import { autoEdit, ensureTimelineSpeeds, markCaptionReview, normalizeScenes, recomputeCut, splitScenesToCutLength, timelineOf } from '../shared/project.js';
 import { captionOutputTimings, newId, sceneOutputRanges } from '../shared/segment.js';
 import { autoMotions } from '../shared/motion.js';
@@ -622,6 +625,135 @@ export async function importFromCapcut(draftDir: string): Promise<void> {
   } catch (e) {
     toast((e as Error).message, 'error');
   }
+}
+
+/** 台本の行(「台本 / 素材」の表を貼った場合は台本の列) */
+export function scriptLines(p: Project): string[] {
+  return parseReferenceTable(p.script).map((r) => r.line.trim()).filter(Boolean);
+}
+
+/** 台本から、CapCut で読み上げるための「読み上げ用」プロジェクトを作る */
+export async function createCapcutTts(): Promise<void> {
+  const p = store.p;
+  const lines = scriptLines(p);
+  if (!lines.length) return toast('先に台本を入れてください(1行が1つの読み上げになります)', 'error');
+  try {
+    await store.save();
+    const job = await api.capcutTts(JSON.parse(JSON.stringify(p)) as Project, lines);
+    const done = await jobPromise(job);
+    if (done.status !== 'done') {
+      if (done.status === 'failed') toast('読み上げ用のプロジェクトを作れませんでした: ' + done.error, 'error', 10000);
+      return;
+    }
+    const r = done.result as { draftName: string; draftDir: string };
+    // 「台本 / 素材」の表なら、素材の指定(参考)にも使う
+    const rows = parseReferenceTable(p.script);
+    const hasHints = rows.some((x) => x.hint);
+    store.commit((pp) => ({
+      ...pp,
+      capcutTts: { dir: r.draftDir, name: r.draftName, createdAt: new Date().toISOString(), lines: lines.length },
+      ...(hasHints && !pp.aiAssign.reference ? { aiAssign: { ...pp.aiAssign, reference: pp.script, useReference: true } } : {}),
+    }));
+    await store.save();
+    toast(`CapCut に「${r.draftName}」を作りました。CapCut で開いて、文字クリップを全部選んで(⌘A)「テキスト読み上げ」で声を選び、CapCut を終了してから「読み上げた音声を読み込む」を押してください。`, 'ok', 15000);
+  } catch (e) {
+    toast((e as Error).message, 'error');
+  }
+}
+
+/** CapCut で読み上げた音声を読み込み、ナレーションにする(テロップの文章は台本の行) */
+export async function importCapcutTts(): Promise<void> {
+  const p = store.p;
+  const tts = p.capcutTts;
+  if (!tts) return;
+  if ((p.captions.length > 0 || p.transcript) && !confirm('今のナレーション・テロップを、CapCut で読み上げた音声と台本で置き換えます(割り当てた素材は、同じ時間のカットに引き継ぎます)。続けますか?')) return;
+  try {
+    const job = await api.capcutTtsImport(p.id, tts.dir);
+    const done = await jobPromise(job);
+    if (done.status !== 'done') {
+      if (done.status === 'failed') toast(String(done.error), 'error', 12000);
+      return;
+    }
+    const r = done.result as { asset: Asset; lines: { text: string; startUs: number; endUs: number }[]; notes: string[] };
+    store.commit((pp) => ({ ...pp, assets: [...pp.assets, r.asset] }));
+    const nj = await api.prepareNarration(p.id, r.asset, 0);
+    const nd = await jobPromise(nj);
+    if (nd.status !== 'done') {
+      if (nd.status === 'failed') toast('音声の準備に失敗しました: ' + nd.error, 'error');
+      return;
+    }
+    const narration = (nd.result as { narration: Project['narration'] }).narration!;
+    const analysis = await api.analysis(p.id, narration.sourceKey);
+    store.state.analysis = analysis;
+    const tokens = ttsTokens(r.lines, analysis, p.cut.params.sensitivityDb);
+    store.commit((pp) => {
+      const next: Project = {
+        ...pp,
+        narration,
+        capcut: undefined,
+        transcript: { engine: 'capcut-tts', model: 'CapCut の読み上げ(台本)', createdAt: new Date().toISOString(), basis: 'source', tokens, notes: [] },
+        captions: [],
+        scenes: [{ id: newId('scn'), srcStart: 0, srcEnd: narration.durationSamples, bg: null, inset: null }],
+        cut: { ...pp.cut, keepRanges: [] },
+      };
+      return autoEdit(recomputeCut(next, analysis), analysis, { keepManual: false, recut: true });
+    });
+    await store.save();
+    for (const n of r.notes) toast(n, 'error', 8000);
+    toast(`読み上げ音声を読み込みました(${r.lines.length} 行)。無音カット・テロップ・カット割りを作りました。「2 自動編集」で詰め方や素材の割り当てを調整できます。`, 'ok', 8000);
+    store.setUi({ step: 2 });
+  } catch (e) {
+    toast((e as Error).message, 'error');
+  }
+}
+
+/**
+ * 読み上げた行ごとに、語の時刻を推定する。
+ * 行の中の句読点で区切った句と、行の中の声のまとまり(短い間で区切った区間)の数が同じなら句ごとに合わせ、
+ * 違えば行の声の区間全体に文字量で配分する。
+ */
+function ttsTokens(lines: { text: string; startUs: number; endUs: number }[], a: AnalysisData, sensitivityDb: number): Token[] {
+  const { threshold } = levelStats(a, sensitivityDb);
+  const fs = a.frameSamples;
+  const toS = (us: number) => Math.round((us / 1e6) * SR);
+  const out: Token[] = [];
+  lines.forEach((ln, li) => {
+    const f0 = Math.floor(toS(ln.startUs) / fs);
+    const f1 = Math.min(a.db.length, Math.ceil(toS(ln.endUs) / fs));
+    // 声のある区間(100ms 未満の間はつなげる)
+    const runs: { start: number; end: number }[] = [];
+    for (let f = f0; f < f1; f++) {
+      if (a.db[f]! < threshold) continue;
+      const s = f * fs;
+      const last = runs[runs.length - 1];
+      if (last && s - last.end < 0.1 * SR) last.end = (f + 1) * fs;
+      else runs.push({ start: s, end: (f + 1) * fs });
+    }
+    const voiced = runs.filter((r) => r.end - r.start > 0.05 * SR);
+    if (!voiced.length) voiced.push({ start: toS(ln.startUs), end: Math.max(toS(ln.startUs) + 1, toS(ln.endUs)) });
+    // 語を、声のある所だけに文字量で配分する(行の中の息継ぎの間には置かない)
+    const total = voiced.reduce((acc, r) => acc + (r.end - r.start), 0);
+    const at = (x: number) => {
+      let rest = x * total;
+      for (const r of voiced) {
+        const len = r.end - r.start;
+        if (rest <= len) return r.start + rest;
+        rest -= len;
+      }
+      return voiced[voiced.length - 1]!.end;
+    };
+    const words = splitJaText(ln.text);
+    const weights = words.map(speakWeight);
+    const sum = weights.reduce((x, y) => x + y, 0) || 1;
+    let acc = 0;
+    words.forEach((w, wi) => {
+      const st = Math.round(at(acc / sum));
+      acc += weights[wi]!;
+      const en = Math.round(at(acc / sum));
+      out.push({ id: `t${li}-${wi}`, text: w, start: st, end: Math.max(st + 1, en), p: 0.9, seg: li, timing: 'chunk' });
+    });
+  });
+  return out;
 }
 
 /** CapCut のプロジェクト(下書き)として書き出す */
