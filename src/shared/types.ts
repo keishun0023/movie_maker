@@ -25,7 +25,7 @@ export interface Asset {
   kind: AssetKind;
   /** 元のファイル名(表示用) */
   name: string;
-  /** プロジェクトフォルダからの相対パス */
+  /** プロジェクトフォルダからの相対パス(素材ライブラリの素材は絶対パス) */
   file: string;
   size: number;
   hash: string;
@@ -50,6 +50,10 @@ export interface Asset {
   thumb?: string;
   /** フォント素材の場合のフォントID */
   fontIds?: string[];
+  /** 素材ライブラリの素材(どのプロジェクトからも使え、プロジェクトごとにコピーしない) */
+  library?: boolean;
+  /** 元の場所のファイルをそのまま使う(コピーしない。CapCut の素材やフォルダから追加したもの) */
+  linked?: boolean;
 }
 
 export interface Narration {

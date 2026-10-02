@@ -79,6 +79,18 @@ export const api = {
       'x-filename': encodeURIComponent(file.name),
       'Content-Type': 'application/octet-stream',
     }),
+  library: () => call<{ assets: Asset[] }>('GET', '/api/library'),
+  libraryUpload: (file: File) =>
+    call<{ asset: Asset; existing: boolean; jobId: string | null }>('POST', '/api/library', undefined, file, {
+      'x-filename': encodeURIComponent(file.name),
+      'Content-Type': 'application/octet-stream',
+    }),
+  libraryLink: (paths: string[]) => call<{ items: { asset: Asset; existing: boolean; jobId: string | null }[] }>('POST', '/api/library/link', { paths }),
+  libraryPick: (mode: 'files' | 'folder') => call<{ items: { asset: Asset; existing: boolean; jobId: string | null }[] }>('POST', '/api/library/pick', { mode }),
+  libraryCapcut: (dir?: string) =>
+    call<{ dir: string; files: { file: string; name: string; size: number; drafts: string[]; inLibrary: boolean }[] }>('GET', '/api/library/capcut' + (dir ? `?dir=${encodeURIComponent(dir)}` : '')),
+  assetsToLibrary: (projectId: string) => call<{ map: Record<string, Asset>; freedBytes: number }>('POST', `/api/projects/${projectId}/assets-to-library`, {}),
+  libraryDelete: (id: string) => call<{ ok: boolean }>('DELETE', `/api/library/${id}`, {}),
   deleteAsset: (projectId: string, asset: Asset) => call<{ ok: boolean }>('DELETE', `/api/projects/${projectId}/assets/${asset.id}`, { asset }),
   prepareNarration: (projectId: string, asset: Asset, audioIndex: number) => call<JobInfo>('POST', `/api/projects/${projectId}/narration`, { asset, audioIndex }),
   analysis: (projectId: string, key: string) => call<AnalysisData>('GET', `/api/projects/${projectId}/analysis/${key}`),

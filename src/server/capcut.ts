@@ -190,6 +190,7 @@ class DraftBuilder {
   readonly tracks: Json[] = [];
   readonly metaEntries: Json[] = [];
   private readonly localIds = new Map<string, string>();
+  private readonly files = new Map<string, string>();
 
   constructor(readonly dir: string) {}
 
@@ -204,16 +205,21 @@ class DraftBuilder {
   }
 
   /** 素材ファイルを下書きフォルダにコピーし、draft_meta_info の取り込み済み素材に登録する */
-  async importFile(src: string, kind: 'video' | 'photo' | 'music', name: string, durationUs: number, w: number, h: number): Promise<{ file: string; localId: string }> {
-    const sub = kind === 'music' ? 'audio' : kind === 'photo' ? 'image' : 'video';
-    const dstDir = path.join(this.dir, 'assets', sub);
-    await fsp.mkdir(dstDir, { recursive: true });
-    const safe = name.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_') || 'media';
-    let dst = path.join(dstDir, safe);
+  async importFile(src: string, kind: 'video' | 'photo' | 'music', name: string, durationUs: number, w: number, h: number, copy = true): Promise<{ file: string; localId: string }> {
     const known = this.localIds.get(src);
-    if (known) return { file: dst, localId: known };
-    for (let i = 2; fs.existsSync(dst); i++) dst = path.join(dstDir, `${path.parse(safe).name}-${i}${path.extname(safe)}`);
-    await fsp.copyFile(src, dst);
+    if (known) return { file: this.files.get(src)!, localId: known };
+    let dst = src;
+    // 素材ライブラリのファイルはコピーせず、そのまま参照する(容量を食わない)。一時的に作ったファイルだけ下書きにコピーする
+    if (copy) {
+      const sub = kind === 'music' ? 'audio' : kind === 'photo' ? 'image' : 'video';
+      const dstDir = path.join(this.dir, 'assets', sub);
+      await fsp.mkdir(dstDir, { recursive: true });
+      const safe = name.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_') || 'media';
+      dst = path.join(dstDir, safe);
+      for (let i = 2; fs.existsSync(dst); i++) dst = path.join(dstDir, `${path.parse(safe).name}-${i}${path.extname(safe)}`);
+      await fsp.copyFile(src, dst);
+    }
+    this.files.set(src, dst);
     const localId = uuid();
     this.localIds.set(src, localId);
     this.metaEntries.push({
@@ -557,7 +563,7 @@ async function addVisualTracks(b: DraftBuilder, p: Project, tl: Timeline, ctx: J
     if (hit) return hit.id;
     const photo = a.kind === 'image';
     const durUs = photo ? 10_800_000_000 : Math.round((a.durationSec ?? 0) * 1e6);
-    const f = await b.importFile(mediaFile(p, a), photo ? 'photo' : 'video', a.name, photo ? 5_000_000 : durUs, a.width ?? W, a.height ?? H);
+    const f = await b.importFile(mediaFile(p, a), photo ? 'photo' : 'video', a.name, photo ? 5_000_000 : durUs, a.width ?? W, a.height ?? H, !a.library);
     const id = uuid();
     b.add('videos', mediaMaterial(id, f, photo, durUs, a.width ?? W, a.height ?? H, !photo && !!a.audioStreams?.length));
     videoMats.set(a.id, { id, asset: a });
@@ -786,7 +792,7 @@ export async function exportCapcut(p: Project, draftsDir: string, ctx: JobContex
     const bgm = p.bgm ? assetOf(p, p.bgm.assetId) : null;
     if (p.bgm && bgm && bgm.durationSec) {
       ctx.progress(0.75, 'BGM を並べています');
-      const f = await b.importFile(sub(p.id, bgm.file), 'music', bgm.name, bgm.durationSec * 1e6, 0, 0);
+      const f = await b.importFile(sub(p.id, bgm.file), 'music', bgm.name, bgm.durationSec * 1e6, 0, 0, !bgm.library);
       const matId = uuid();
       b.add('audios', {
         category_id: '',
@@ -1302,4 +1308,58 @@ export async function renderTtsAudio(draft: Json, dir: string, outFile: string, 
   });
   const n = await renderDraftAudio({ ...d, audio: pieces, durationUs: cursor }, outFile, ctx);
   return { lines, notes: [...notes, ...n] };
+}
+
+// ---- CapCut で使っている素材(このアプリの素材ライブラリにコピーせず加える用) ----
+
+export interface CapcutMediaFile {
+  file: string;
+  name: string;
+  size: number;
+  /** 使っている CapCut のプロジェクト名 */
+  drafts: string[];
+}
+
+/** CapCut の各プロジェクトに取り込まれている素材ファイル(下書きフォルダの外にあり、今もあるもの) */
+export function listCapcutMedia(draftsDir: string): CapcutMediaFile[] {
+  const byFile = new Map<string, CapcutMediaFile>();
+  let names: string[] = [];
+  try {
+    names = fs.readdirSync(draftsDir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
+  } catch {
+    return [];
+  }
+  const root = path.resolve(draftsDir) + path.sep;
+  for (const name of names) {
+    const dir = path.join(draftsDir, name);
+    const files: string[] = [];
+    const meta = readJson(path.join(dir, 'draft_meta_info.json'));
+    for (const g of (Array.isArray(meta?.draft_materials) ? meta!.draft_materials : []) as Json[]) {
+      for (const v of (Array.isArray(g.value) ? g.value : []) as Json[]) if (typeof v.file_Path === 'string' && v.file_Path) files.push(resolveDraftPath(v.file_Path, dir));
+    }
+    const t = readDraftTimeline(dir);
+    const mats = (t?.draft.materials ?? {}) as Record<string, unknown>;
+    for (const kind of ['videos', 'audios']) {
+      for (const m of (Array.isArray(mats[kind]) ? mats[kind] : []) as Json[]) if (typeof m.path === 'string' && m.path) files.push(resolveDraftPath(m.path, dir));
+    }
+    for (const f of files) {
+      const abs = path.resolve(f);
+      if (abs.startsWith(root)) continue; // 下書きの中のファイル(書き出したテロップ・読み上げ音声など)は除く
+      const hit = byFile.get(abs);
+      if (hit) {
+        if (!hit.drafts.includes(name)) hit.drafts.push(name);
+        continue;
+      }
+      let size = 0;
+      try {
+        const st = fs.statSync(abs);
+        if (!st.isFile()) continue;
+        size = st.size;
+      } catch {
+        continue;
+      }
+      byFile.set(abs, { file: abs, name: path.basename(abs), size, drafts: [name] });
+    }
+  }
+  return [...byFile.values()];
 }

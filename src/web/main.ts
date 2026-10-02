@@ -219,7 +219,7 @@ async function openEditor(id: string) {
       timeline.draw();
       return;
     }
-    const leftKey = JSON.stringify([ui.leftTab, ui.selection, ui.checkedAssets, store.p.assets, store.p.scenes, store.p.captions.map((c) => c.text), store.p.timeline?.hash, reason === 'preview' ? Math.random() : 0]);
+    const leftKey = JSON.stringify([ui.leftTab, ui.selection, ui.checkedAssets, store.p.assets, store.p.scenes, store.p.captions.map((c) => c.text), store.p.timeline?.hash, reason === 'preview' || reason === 'left' ? Math.random() : 0]);
     if (leftKey !== lastLeftKey) {
       lastLeftKey = leftKey;
       renderLeft(left, seek);

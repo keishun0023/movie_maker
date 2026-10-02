@@ -24,8 +24,19 @@ export function projectDir(id: string): string {
   return path.join(PROJECTS_DIR, assertId(id));
 }
 
-/** プロジェクト内のサブフォルダ */
+/** 素材ライブラリのファイル(プロジェクトの外にあっても使ってよいファイル) */
+const externalFiles = new Set<string>();
+export function allowExternalFiles(files: (string | undefined)[], allow = true): void {
+  for (const f of files) if (f && path.isAbsolute(f)) (allow ? externalFiles.add(path.resolve(f)) : externalFiles.delete(path.resolve(f)));
+}
+
+/** プロジェクト内のサブフォルダ。素材ライブラリのファイル(絶対パス)は、そのまま返す */
 export function sub(id: string, ...parts: string[]): string {
+  if (parts.length === 1 && path.isAbsolute(parts[0]!)) {
+    const abs = path.resolve(parts[0]!);
+    if (externalFiles.has(abs)) return abs;
+    throw new HttpError(400, '素材ライブラリにないファイルです');
+  }
   const base = projectDir(id);
   const p = path.resolve(base, ...parts);
   if (!p.startsWith(base + path.sep) && p !== base) throw new HttpError(400, '不正なパスです');

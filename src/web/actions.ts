@@ -74,26 +74,69 @@ export async function cancelJob(id: string) {
 
 export let previewVersion = 0;
 
+// ---- 素材ライブラリ ----
+
+export const libraryState: { items: Asset[] | null; loading: boolean } = { items: null, loading: false };
+
+export async function loadLibrary(): Promise<void> {
+  if (libraryState.loading) return;
+  libraryState.loading = true;
+  try {
+    libraryState.items = (await api.library()).assets;
+  } catch {
+    libraryState.items = [];
+  } finally {
+    libraryState.loading = false;
+    store.emit('right');
+    store.emit('left');
+  }
+}
+
+function watchPreview(name: string, jobId: string | null) {
+  if (!jobId) return;
+  watchJob({ id: jobId, type: 'preview', label: `${name} のプレビュー作成`, status: 'queued', progress: 0, message: '', createdAt: '' }, (j) => {
+    previewVersion++;
+    if (j.status === 'failed') toast(`${name} のプレビューを作れませんでした: ${j.error}`, 'error');
+    store.emit('preview');
+  });
+}
+
+/** ライブラリの素材をこのプロジェクトで使えるようにする(コピーはしない) */
+export function addFromLibrary(assets: Asset[]) {
+  const have = new Set(store.p.assets.map((a) => a.id));
+  const add = assets.filter((a) => !have.has(a.id));
+  if (!add.length) return;
+  store.commit((pp) => ({ ...pp, assets: [...pp.assets, ...add] }));
+  void store.save();
+}
+
+function afterLibraryAdd(items: { asset: Asset; existing: boolean; jobId: string | null }[]) {
+  for (const it of items) {
+    if (it.asset.status === 'error') toast(`${it.asset.name}: ${it.asset.error}`, 'error');
+    watchPreview(it.asset.name, it.jobId);
+  }
+  addFromLibrary(items.map((x) => x.asset).filter((a) => a.status === 'ok'));
+  void loadLibrary();
+}
+
+/** 取り込み: 音声・動画・画像は素材ライブラリへ(1回だけ保存し、どのプロジェクトからも使える)。フォントはプロジェクトへ */
 export async function importFiles(files: File[]) {
   const p = store.p;
   for (const f of files) {
     try {
       toast(`取り込み中: ${f.name}`);
-      const { asset, jobId } = await api.upload(p.id, f);
-      store.commit((pp) => ({ ...pp, assets: [...pp.assets, asset] }));
-      if (asset.status === 'error') toast(`${f.name}: ${asset.error}`, 'error');
-      else if (asset.kind === 'font') {
+      if (/\.(ttf|otf|ttc)$/i.test(f.name)) {
+        const { asset } = await api.upload(p.id, f);
+        store.commit((pp) => ({ ...pp, assets: [...pp.assets, asset] }));
+        if (asset.status === 'error') toast(`${f.name}: ${asset.error}`, 'error');
         store.state.fonts = await api.fonts();
         store.emit('fonts');
+        continue;
       }
-      for (const w of asset.warnings) toast(`${f.name}: ${w}`);
-      if (jobId) {
-        watchJob({ id: jobId, type: 'preview', label: `${f.name} のプレビュー作成`, status: 'queued', progress: 0, message: '', createdAt: '' }, (j) => {
-          previewVersion++;
-          if (j.status === 'failed') toast(`${f.name} のプレビューを作れませんでした: ${j.error}`, 'error');
-          store.emit('preview');
-        });
-      }
+      const r = await api.libraryUpload(f);
+      if (r.existing) toast(`${f.name} はライブラリにあるので、それを使います(もう一度保存はしません)`);
+      for (const w of r.asset.warnings) toast(`${f.name}: ${w}`);
+      afterLibraryAdd([r]);
     } catch (e) {
       toast(`${f.name}: ${(e as Error).message}`, 'error');
     }
@@ -101,11 +144,78 @@ export async function importFiles(files: File[]) {
   await store.save();
 }
 
+/** Mac のファイル選択画面で選んだファイル・フォルダを、コピーせずに使う */
+export async function pickIntoLibrary(mode: 'files' | 'folder') {
+  try {
+    const r = await api.libraryPick(mode);
+    if (!r.items.length) return;
+    afterLibraryAdd(r.items);
+    toast(`${r.items.length} 個の素材を追加しました(元の場所のファイルを使います。コピーはしません)`, 'ok');
+  } catch (e) {
+    toast((e as Error).message, 'error');
+  }
+}
+
+/** CapCut のプロジェクトで使っている素材を、コピーせずに使う */
+export async function linkIntoLibrary(paths: string[]) {
+  try {
+    const r = await api.libraryLink(paths);
+    afterLibraryAdd(r.items);
+    toast(`${r.items.length} 個の素材を追加しました(CapCut と同じファイルを使います。コピーはしません)`, 'ok');
+  } catch (e) {
+    toast((e as Error).message, 'error');
+  }
+}
+
+/** このプロジェクトにコピーしてある素材を、素材ライブラリに移す(ほかのプロジェクトでも使え、同じ素材の重複を消す) */
+export async function moveAssetsToLibrary() {
+  const p = store.p;
+  const n = p.assets.filter((a) => !a.library && a.status === 'ok' && a.kind !== 'font').length;
+  if (!n) return toast('ライブラリに移す素材はありません');
+  if (!confirm(`このプロジェクトの素材 ${n} 個を素材ライブラリに移します(同じ素材がライブラリにあれば重複分を削除します)。続けますか?`)) return;
+  await store.save();
+  try {
+    const r = await api.assetsToLibrary(p.id);
+    const m = r.map;
+    const id = (x: string) => m[x]?.id ?? x;
+    store.commit((pp) => ({
+      ...pp,
+      assets: pp.assets.reduce<Asset[]>((acc, a) => {
+        const nx = m[a.id] ?? a;
+        if (!acc.some((x) => x.id === nx.id)) acc.push(nx);
+        return acc;
+      }, []),
+      narration: pp.narration ? { ...pp.narration, assetId: id(pp.narration.assetId) } : null,
+      bgm: pp.bgm ? { ...pp.bgm, assetId: id(pp.bgm.assetId) } : null,
+      scenes: pp.scenes.map((s) => ({
+        ...s,
+        bg: s.bg ? { ...s.bg, assetId: id(s.bg.assetId) } : null,
+        inset: s.inset ? { ...s.inset, assetId: id(s.inset.assetId) } : null,
+        ...(s.aiAlternatives ? { aiAlternatives: s.aiAlternatives.map((x) => ({ ...x, assetId: id(x.assetId) })) } : {}),
+      })),
+      aiAssign: { ...pp.aiAssign, assetIds: pp.aiAssign.assetIds.map(id) },
+    }));
+    await store.save();
+    previewVersion++;
+    await loadLibrary();
+    toast(`${Object.keys(m).length} 個の素材をライブラリに移しました${r.freedBytes ? `(重複分 ${(r.freedBytes / 1024 / 1024).toFixed(0)}MB を削除)` : ''}`, 'ok');
+  } catch (e) {
+    toast((e as Error).message, 'error');
+  }
+}
+
+export async function deleteFromLibrary(a: Asset) {
+  if (!confirm(`「${a.name}」を素材ライブラリから削除しますか?\n${a.linked ? '元の場所のファイルは消えません。' : '取り込んだファイルも消えます。'}この素材を使っているプロジェクトや CapCut に書き出したプロジェクトでは表示されなくなります。`)) return;
+  await api.libraryDelete(a.id);
+  store.commit((pp) => ({ ...pp, assets: pp.assets.filter((x) => x.id !== a.id), scenes: pp.scenes.map((s) => ({ ...s, bg: s.bg?.assetId === a.id ? null : s.bg, inset: s.inset?.assetId === a.id ? null : s.inset })) }));
+  await loadLibrary();
+}
+
 export async function removeAsset(asset: Asset) {
   const p = store.p;
   const used = p.scenes.some((s) => s.bg?.assetId === asset.id || s.inset?.assetId === asset.id) || p.bgm?.assetId === asset.id || p.narration?.assetId === asset.id;
   if (used && !confirm(`「${asset.name}」はシーン・BGM・ナレーションで使われています。削除すると割り当ても外れます。削除しますか?`)) return;
-  if (!used && !confirm(`「${asset.name}」をプロジェクトから削除しますか?(元のファイルは消えません)`)) return;
+  if (!used && !confirm(asset.library ? `「${asset.name}」をこのプロジェクトから外しますか?(素材ライブラリには残ります)` : `「${asset.name}」をプロジェクトから削除しますか?(元のファイルは消えません)`)) return;
   store.commit((pp) => ({
     ...pp,
     assets: pp.assets.filter((a) => a.id !== asset.id),
@@ -113,7 +223,7 @@ export async function removeAsset(asset: Asset) {
     bgm: pp.bgm?.assetId === asset.id ? null : pp.bgm,
   }));
   await store.save();
-  if (asset.id !== p.narration?.assetId) await api.deleteAsset(p.id, asset).catch(() => undefined);
+  if (asset.id !== p.narration?.assetId && !asset.library) await api.deleteAsset(p.id, asset).catch(() => undefined);
 }
 
 export function defaultBg(asset: Asset, p: Project): BgPlacement {

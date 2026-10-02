@@ -142,14 +142,21 @@ export const proxyPath = (projectId: string, assetId: string, ext = '.mp4') => s
 export const thumbPath = (projectId: string, assetId: string) => sub(projectId, 'work', `thumb-${assetId}.jpg`);
 
 /** プレビュー用の軽い動画(回転適用・30fps・H.264)とサムネイルを作る */
-export async function makePreviewFiles(projectId: string, asset: Asset, signal?: AbortSignal, onProgress?: (p: number) => void): Promise<void> {
+export interface PreviewTargets {
+  thumb: string;
+  proxy: (ext?: string) => string;
+}
+
+export async function makePreviewFiles(projectId: string, asset: Asset, signal?: AbortSignal, onProgress?: (p: number) => void, targets?: PreviewTargets): Promise<void> {
+  const thumbOut = targets?.thumb ?? thumbPath(projectId, asset.id);
+  const proxyOut = (ext?: string) => (targets ? targets.proxy(ext) : proxyPath(projectId, asset.id, ext));
   const ffmpeg = requireTool('ffmpeg');
   const src = sub(projectId, asset.file);
   const opt = signal ? { signal } : {};
   if (asset.kind === 'video') {
     const t = Math.min(1, (asset.durationSec ?? 0) / 2);
-    await run(ffmpeg, ['-y', '-v', 'error', '-ss', t.toFixed(3), '-i', src, '-frames:v', '1', '-vf', 'scale=320:-2', '-q:v', '4', thumbPath(projectId, asset.id)], opt);
-    const tmp = proxyPath(projectId, asset.id) + '.part.mp4';
+    await run(ffmpeg, ['-y', '-v', 'error', '-ss', t.toFixed(3), '-i', src, '-frames:v', '1', '-vf', 'scale=320:-2', '-q:v', '4', thumbOut], opt);
+    const tmp = proxyOut() + '.part.mp4';
     const dur = asset.durationSec ?? 0;
     // Mac ではハードウェアの読み込み・書き出しを使う(大きな動画でも速い)。失敗したら通常の方法でやり直す
     const mac = process.platform === 'darwin';
@@ -182,12 +189,12 @@ export async function makePreviewFiles(projectId: string, asset: Asset, signal?:
       if (!mac || signal?.aborted) throw e;
       await encode(false);
     }
-    await fsp.rename(tmp, proxyPath(projectId, asset.id));
+    await fsp.rename(tmp, proxyOut());
   } else if (asset.kind === 'image') {
-    await runOk(ffmpeg, ['-y', '-v', 'error', '-i', src, '-frames:v', '1', '-vf', 'scale=320:-2', '-q:v', '4', thumbPath(projectId, asset.id)], opt);
+    await runOk(ffmpeg, ['-y', '-v', 'error', '-i', src, '-frames:v', '1', '-vf', 'scale=320:-2', '-q:v', '4', thumbOut], opt);
     const ext = path.extname(asset.file).toLowerCase();
     if (!BROWSER_IMAGE_EXT.includes(ext)) {
-      await runOk(ffmpeg, ['-y', '-v', 'error', '-i', src, '-frames:v', '1', '-vf', "scale=w='min(2160,iw)':h='min(2160,ih)':force_original_aspect_ratio=decrease", '-q:v', '2', proxyPath(projectId, asset.id, '.jpg')], opt);
+      await runOk(ffmpeg, ['-y', '-v', 'error', '-i', src, '-frames:v', '1', '-vf', "scale=w='min(2160,iw)':h='min(2160,ih)':force_original_aspect_ratio=decrease", '-q:v', '2', proxyOut('.jpg')], opt);
     }
   }
 }

@@ -216,3 +216,7 @@ a { color: var(--accent); }
 .ref-table td:last-child, .ref-table th:last-child { text-align: right; width: 3em; }
 .ref-table tr.none td { opacity: 0.5; }
 .stage-wrap.drop .stage { outline: 3px dashed var(--ok); outline-offset: 2px; }
+.library { margin-top: 14px; border-top: 1px solid #2a313b; padding-top: 10px; }
+.section-title { font-weight: 600; margin: 4px 0; }
+.capcut-media { max-height: 240px; overflow: auto; display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
+.capcut-media label { font-size: 12px; align-items: center; }

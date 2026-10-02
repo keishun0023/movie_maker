@@ -8,9 +8,34 @@ import { pipeline } from 'node:stream/promises';
 import { Transform } from 'node:stream';
 import type { Asset } from '../shared/types.js';
 import { registerProjectFont } from './fonts.js';
-import { allowedExt, describeMedia, FONT_EXT, IMAGE_EXT, makePreviewFiles, probe, proxyPath, thumbPath } from './media.js';
+import { allowedExt, describeMedia, FONT_EXT, IMAGE_EXT, makePreviewFiles, probe, proxyPath, thumbPath, type PreviewTargets } from './media.js';
 import { requireTool, runOk } from './proc.js';
 import { HttpError, sub } from './store.js';
+
+/** 受け取ったファイルを保存する(途中で失敗したら消す)。大きさと SHA-1 を返す */
+export async function saveUploadTo(req: IncomingMessage, dest: string): Promise<{ size: number; hash: string }> {
+  await fsp.mkdir(path.dirname(dest), { recursive: true });
+  const hash = crypto.createHash('sha1');
+  let size = 0;
+  const tmp = dest + '.part';
+  const limit = 16 * 1024 ** 3;
+  const counter = new Transform({
+    transform(chunk: Buffer, _enc, cb) {
+      size += chunk.length;
+      if (size > limit) return cb(new HttpError(413, 'ファイルが大きすぎます'));
+      hash.update(chunk);
+      cb(null, chunk);
+    },
+  });
+  try {
+    await pipeline(req, counter, fs.createWriteStream(tmp));
+  } catch (e) {
+    await fsp.rm(tmp, { force: true });
+    throw e;
+  }
+  await fsp.rename(tmp, dest);
+  return { size, hash: hash.digest('hex') };
+}
 
 /** JPEG の EXIF Orientation (1〜8)。無ければ 1 */
 export async function jpegOrientation(file: string): Promise<number> {
@@ -63,9 +88,11 @@ const ORIENT_FILTER: Record<number, string> = {
  * 画像を向きをそろえた PNG に変換する(プレビューと書き出しで同じ画素を使うため)。
  * FFmpeg が EXIF の向きを自動適用しない場合に備え、JPEG の向きは自前で適用する。
  */
-async function normalizeImage(projectId: string, asset: Asset, src: string): Promise<void> {
+export async function normalizeImage(projectId: string, asset: Asset, src: string, targets?: PreviewTargets): Promise<void> {
   const ffmpeg = requireTool('ffmpeg');
-  const out = proxyPath(projectId, asset.id, '.png');
+  const out = targets ? targets.proxy('.png') : proxyPath(projectId, asset.id, '.png');
+  const thumbOut = targets ? targets.thumb : thumbPath(projectId, asset.id);
+  const rel = (f: string) => (targets ? f : path.relative(sub(projectId), f));
   const ext = path.extname(src).toLowerCase();
   const orient = ext === '.jpg' || ext === '.jpeg' ? await jpegOrientation(src) : 1;
   const filters: string[] = [];
@@ -83,10 +110,10 @@ async function normalizeImage(projectId: string, asset: Asset, src: string): Pro
   if (!v?.width || !v.height) throw new Error('画像の大きさを取得できませんでした');
   asset.width = v.width;
   asset.height = v.height;
-  asset.proxy = path.relative(sub(projectId), out);
+  asset.proxy = rel(out);
   if (orient > 1 && rawW && rawH) asset.warnings.push('写真の向き情報(EXIF)を適用しました。');
-  await runOk(ffmpeg, ['-y', '-v', 'error', '-i', out, '-frames:v', '1', '-vf', 'scale=320:-2', '-q:v', '4', thumbPath(projectId, asset.id)]);
-  asset.thumb = path.relative(sub(projectId), thumbPath(projectId, asset.id));
+  await runOk(ffmpeg, ['-y', '-v', 'error', '-i', out, '-frames:v', '1', '-vf', 'scale=320:-2', '-q:v', '4', thumbOut]);
+  asset.thumb = rel(thumbOut);
 }
 
 /** アップロードされたファイルを保存して素材情報を作る */
@@ -99,32 +126,14 @@ export async function importUpload(projectId: string, req: IncomingMessage): Pro
   const rel = path.join('assets', `${id}${ext}`);
   const dest = sub(projectId, rel);
   await fsp.mkdir(path.dirname(dest), { recursive: true });
-  const hash = crypto.createHash('sha1');
-  let size = 0;
-  const tmp = dest + '.part';
-  const limit = 16 * 1024 ** 3;
-  const counter = new Transform({
-    transform(chunk: Buffer, _enc, cb) {
-      size += chunk.length;
-      if (size > limit) return cb(new HttpError(413, 'ファイルが大きすぎます'));
-      hash.update(chunk);
-      cb(null, chunk);
-    },
-  });
-  try {
-    await pipeline(req, counter, fs.createWriteStream(tmp));
-  } catch (e) {
-    await fsp.rm(tmp, { force: true });
-    throw e;
-  }
-  await fsp.rename(tmp, dest);
+  const { size, hash } = await saveUploadTo(req, dest);
   const base: Asset = {
     id,
     kind: 'audio',
     name,
     file: rel,
     size,
-    hash: hash.digest('hex'),
+    hash,
     importedAt: new Date().toISOString(),
     status: 'ok',
     warnings: [],
@@ -175,6 +184,8 @@ export async function buildPreview(projectId: string, asset: Asset, signal: Abor
 }
 
 export async function removeAssetFiles(projectId: string, asset: Asset): Promise<void> {
+  // 素材ライブラリの素材は、プロジェクトから外すだけ(ファイルはライブラリに残す)
+  if (asset.library) return;
   for (const rel of [asset.file, asset.proxy, asset.thumb]) {
     if (!rel) continue;
     await fsp.rm(sub(projectId, rel), { force: true }).catch(() => undefined);

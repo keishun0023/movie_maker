@@ -12,10 +12,11 @@ import { aiAssign, videoShots, videoStrip } from './ai/assign.js';
 import { outToSrc } from '../shared/timemap.js';
 import { hintTerms, mergeHints } from '../shared/script.js';
 import { adoptLocalFile, buildPreview, importUpload, removeAssetFiles } from './assets.js';
+import { buildLibraryPreview, libraryAsset, libraryItems, linkToLibrary, mediaFilesIn, moveProjectAssetsToLibrary, removeFromLibrary, uploadToLibrary } from './library.js';
 import { WhisperCppAdapter } from './asr/whisperCpp.js';
 import { BUILD_INFO, PRESETS_FILE } from './config.js';
 import { cleanupDir, exportBaseName, runExport, type CaptionImage } from './export.js';
-import { createTtsDraft, defaultDraftsDir, exportCapcut, exportCapcutInto, renderTtsAudio, type CapcutCaptionImage, findSeed, listCapcutDrafts, parseDraft, readDraftTimeline, renderDraftAudio } from './capcut.js';
+import { createTtsDraft, defaultDraftsDir, listCapcutMedia, exportCapcut, exportCapcutInto, renderTtsAudio, type CapcutCaptionImage, findSeed, listCapcutDrafts, parseDraft, readDraftTimeline, renderDraftAudio } from './capcut.js';
 import { fontBytes, fontEntry, listFonts, missingChars, registerProjectFont, scanFonts } from './fonts.js';
 import { readBody, readJson, Router, sendFile, sendJson } from './http.js';
 import { cancelJob, enqueue, getJob, listJobs, retryJob } from './jobs.js';
@@ -35,7 +36,7 @@ import {
   writeWav,
 } from './media.js';
 import { downloadModel, isInstalled, listModels, MODELS, modelDef, modelPath, recommend, type ModelDef } from './models.js';
-import { requireTool, runOk } from './proc.js';
+import { requireTool, run, runOk } from './proc.js';
 import {
   assertId,
   atomicWrite,
@@ -163,6 +164,81 @@ router.del('/api/projects/:id', async (req, res) => {
   sendJson(res, 200, { ok: true });
 });
 
+// ---- 素材ライブラリ(どのプロジェクトからも使える素材。プロジェクトごとにコピーしない) ----
+
+function previewJob(asset: Asset): string {
+  const job = enqueue({ type: 'preview', label: `${asset.name} のプレビュー作成`, queue: 'media', runner: (ctx) => buildLibraryPreview(asset, ctx.signal, ctx.progress) });
+  return job.id;
+}
+
+router.get('/api/library', (_req, res) => sendJson(res, 200, { assets: libraryItems() }));
+
+router.post('/api/library', async (req, res) => {
+  const r = await uploadToLibrary(req);
+  sendJson(res, 200, { asset: r.asset, existing: r.existing, jobId: r.needsPreview ? previewJob(r.asset) : null });
+});
+
+/** 元の場所のファイルを、コピーせずに加える(CapCut の素材・フォルダの素材) */
+router.post('/api/library/link', async (req, res) => {
+  const body = await readJson<{ paths: string[] }>(req, 4 * 1024 * 1024);
+  const paths = (Array.isArray(body.paths) ? body.paths : []).filter((p) => typeof p === 'string' && path.isAbsolute(p)).slice(0, 2000);
+  const r = await linkToLibrary(paths);
+  sendJson(res, 200, { items: r.map((x) => ({ asset: x.asset, existing: x.existing, jobId: x.needsPreview ? previewJob(x.asset) : null })) });
+});
+
+/** Mac のファイル選択画面でファイル・フォルダを選んで、コピーせずに加える */
+router.post('/api/library/pick', async (req, res) => {
+  const body = await readJson<{ mode: 'files' | 'folder' }>(req);
+  if (process.platform !== 'darwin') throw new HttpError(400, 'この機能は Mac でのみ使えます');
+  // AppleScript は1行ずつ -e で渡す
+  const lines =
+    body.mode === 'folder'
+      ? ['POSIX path of (choose folder with prompt "素材のフォルダを選んでください(コピーせずに使います)")']
+      : [
+          'set fs to choose file with prompt "素材を選んでください(コピーせずに使います)" with multiple selections allowed',
+          'set out to ""',
+          'repeat with f in fs',
+          'set out to out & POSIX path of f & linefeed',
+          'end repeat',
+          'return out',
+        ];
+  const r = await run('osascript', lines.flatMap((l) => ['-e', l]));
+  if (r.code !== 0) return sendJson(res, 200, { items: [] }); // キャンセル
+  const picked = r.stdout.split('\n').map((x: string) => x.trim()).filter(Boolean);
+  const paths = body.mode === 'folder' && picked[0] ? await mediaFilesIn(picked[0]) : picked;
+  const out = await linkToLibrary(paths);
+  sendJson(res, 200, { items: out.map((x) => ({ asset: x.asset, existing: x.existing, jobId: x.needsPreview ? previewJob(x.asset) : null })) });
+});
+
+/** CapCut のプロジェクトで使っている素材の一覧 */
+router.get('/api/library/capcut', (req, res) => {
+  const dir = (req.query.get('dir') ?? '').trim() || defaultDraftsDir();
+  const have = new Set(libraryItems().map((a) => a.file));
+  sendJson(res, 200, { dir, files: fs.existsSync(dir) ? listCapcutMedia(dir).map((f) => ({ ...f, inLibrary: have.has(f.file) })) : [] });
+});
+
+/** プロジェクトにコピーしてある素材をライブラリに移す(容量を減らす) */
+router.post('/api/projects/:id/assets-to-library', async (req, res) => {
+  const id = assertId(req.params.id!);
+  const p = await loadProject(id);
+  const r = await moveProjectAssetsToLibrary(id, p.assets, (rel) => sub(id, rel));
+  sendJson(res, 200, r);
+});
+
+router.del('/api/library/:id', async (req, res) => {
+  await removeFromLibrary(assertId(req.params.id!));
+  sendJson(res, 200, { ok: true });
+});
+
+router.get('/api/library/:id/:which', async (req, res) => {
+  const a = libraryAsset(assertId(req.params.id!));
+  if (!a) throw new HttpError(404, '素材が見つかりません');
+  const which = req.params.which;
+  const f = which === 'thumb' ? a.thumb : which === 'preview' ? (a.proxy && fs.existsSync(a.proxy) ? a.proxy : a.kind === 'video' ? null : a.file) : a.file;
+  if (!f || !fs.existsSync(f)) throw new HttpError(404, which === 'preview' ? 'プレビューを準備中です' : 'ファイルが見つかりません');
+  return sendFile(req, res, f, which === 'thumb' ? { cache: 'no-cache' } : undefined);
+});
+
 // ---- 素材 ----
 
 router.post('/api/projects/:id/assets', async (req, res) => {
@@ -202,6 +278,13 @@ router.get('/api/projects/:id/media/:assetId/:which', async (req, res) => {
   const id = assertId(req.params.id!);
   const assetId = assertId(req.params.assetId!);
   const which = req.params.which!;
+  const lib = libraryAsset(assetId);
+  if (lib) {
+    // 素材ライブラリの素材
+    const f = which === 'thumb' ? lib.thumb : which === 'preview' ? (lib.proxy && fs.existsSync(lib.proxy) ? lib.proxy : lib.kind === 'video' ? null : lib.file) : lib.file;
+    if (!f || !fs.existsSync(f)) throw new HttpError(404, which === 'preview' ? 'プレビューを準備中です' : 'ファイルが見つかりません');
+    return sendFile(req, res, f, which === 'thumb' ? { cache: 'no-cache' } : undefined);
+  }
   const dir = sub(id, 'assets');
   if (which === 'thumb') {
     return sendFile(req, res, thumbPath(id, assetId), { cache: 'no-cache' });
