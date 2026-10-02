@@ -98,7 +98,8 @@ export const api = {
     call<{ dir: string; drafts: { name: string; dir: string; durationSec: number; modified: number; readable: boolean; captions: number; audioPieces: number }[] }>('GET', '/api/capcut/drafts' + (dir ? `?dir=${encodeURIComponent(dir)}` : '')),
   capcutImport: (projectId: string, draftDir: string) => call<JobInfo>('POST', `/api/projects/${projectId}/capcut-import`, { draftDir }),
   capcutInfo: (dir?: string) => call<{ dir: string; defaultDir: string; exists: boolean; projects: number; version: string | null }>('GET', '/api/capcut' + (dir ? `?dir=${encodeURIComponent(dir)}` : '')),
-  startCapcut: (projectId: string, project: Project) => call<JobInfo>('POST', `/api/projects/${projectId}/capcut`, { project }),
+  startCapcut: (projectId: string, project: Project, captions: { outStart: number; outEnd: number; png: string; x: number; y: number; w: number; h: number }[] = []) =>
+    call<JobInfo>('POST', `/api/projects/${projectId}/capcut`, { project, captions }),
   exports: (projectId: string) => call<{ name: string; size: number; mtime: string }[]>('GET', `/api/projects/${projectId}/exports`),
   reveal: (projectId: string) => call<{ path: string }>('POST', `/api/projects/${projectId}/reveal`, {}),
   jobs: (projectId?: string) => call<JobInfo[]>('GET', '/api/jobs' + (projectId ? `?projectId=${projectId}` : '')),

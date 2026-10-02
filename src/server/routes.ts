@@ -15,7 +15,7 @@ import { adoptLocalFile, buildPreview, importUpload, removeAssetFiles } from './
 import { WhisperCppAdapter } from './asr/whisperCpp.js';
 import { BUILD_INFO, PRESETS_FILE } from './config.js';
 import { cleanupDir, exportBaseName, runExport, type CaptionImage } from './export.js';
-import { defaultDraftsDir, exportCapcut, exportCapcutInto, findSeed, listCapcutDrafts, parseDraft, readDraftTimeline, renderDraftAudio } from './capcut.js';
+import { defaultDraftsDir, exportCapcut, exportCapcutInto, type CapcutCaptionImage, findSeed, listCapcutDrafts, parseDraft, readDraftTimeline, renderDraftAudio } from './capcut.js';
 import { fontBytes, fontEntry, listFonts, missingChars, registerProjectFont, scanFonts } from './fonts.js';
 import { readBody, readJson, Router, sendFile, sendJson } from './http.js';
 import { cancelJob, enqueue, getJob, listJobs, retryJob } from './jobs.js';
@@ -613,8 +613,22 @@ router.get('/api/capcut', (req, res) => {
 
 router.post('/api/projects/:id/capcut', async (req, res) => {
   const id = assertId(req.params.id!);
-  const body = await readJson<{ project: Project }>(req, 20 * 1024 * 1024);
+  const body = await readJson<{ project: Project; captions?: { outStart: number; outEnd: number; png: string; x: number; y: number; w: number; h: number }[] }>(req, 200 * 1024 * 1024);
   const project = body.project;
+  // テロップを画像で入れるときは、画面で描いたテロップ画像を受け取る
+  const workDir = sub(id, 'work', `capcut-${crypto.randomBytes(5).toString('hex')}`);
+  const capImages: CapcutCaptionImage[] = [];
+  if (Array.isArray(body.captions) && body.captions.length) {
+    await fsp.mkdir(workDir, { recursive: true });
+    for (let i = 0; i < body.captions.length; i++) {
+      const c = body.captions[i]!;
+      const m = /^data:image\/png;base64,(.+)$/.exec(c.png);
+      if (!m) continue;
+      const file = path.join(workDir, `テロップ${String(i + 1).padStart(3, '0')}.png`);
+      await fsp.writeFile(file, Buffer.from(m[1]!, 'base64'));
+      capImages.push({ outStart: Math.round(c.outStart), outEnd: Math.round(c.outEnd), file, x: c.x, y: c.y, w: c.w, h: c.h });
+    }
+  }
   if (!project || project.id !== id) throw new HttpError(400, 'プロジェクトが一致しません');
   if (!project.narration) throw new HttpError(400, 'ナレーション音声を設定してください');
   const dir = (project.export.capcutDir ?? '').trim() || defaultDraftsDir();
@@ -625,7 +639,8 @@ router.post('/api/projects/:id/capcut', async (req, res) => {
     projectId: id,
     queue: 'export',
     // CapCut から読み込んだプロジェクトは、元の下書きに素材を加えた複製を作る
-    runner: (ctx) => (project.capcut ? exportCapcutInto(project, dir, ctx) : exportCapcut(project, dir, ctx)),
+    runner: (ctx) => (project.capcut ? exportCapcutInto(project, dir, ctx) : exportCapcut(project, dir, ctx, capImages)),
+    cleanup: cleanupDir(workDir),
   });
   sendJson(res, 200, job);
 });

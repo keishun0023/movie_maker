@@ -288,6 +288,8 @@ export interface ExportSettings {
   alsoSrt: boolean;
   /** CapCut の下書きフォルダ(空なら既定の場所) */
   capcutDir?: string;
+  /** CapCut へのテロップの入れ方: image = 見た目そのまま(画像) / text = CapCut で直せる文字(見た目は近い値) */
+  capcutCaptions?: 'image' | 'text';
 }
 
 export interface SafeAreaGuide {

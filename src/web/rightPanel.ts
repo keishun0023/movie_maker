@@ -1438,6 +1438,18 @@ function capcutSection(p: Project): HTMLElement {
       }),
       '空欄なら既定の場所。CapCut の「設定 → 下書きの場所」と同じ場所を指定します',
     ),
+    p.capcut
+      ? null
+      : field(
+          'テロップの入れ方',
+          h(
+            'div',
+            { class: 'seg-buttons' },
+            h('button', { type: 'button', class: (p.export.capcutCaptions ?? 'image') === 'image' ? 'on' : '', onclick: () => store.commit((pp) => ({ ...pp, export: { ...pp.export, capcutCaptions: 'image' } })) }, '見た目そのまま(画像)'),
+            h('button', { type: 'button', class: p.export.capcutCaptions === 'text' ? 'on' : '', onclick: () => store.commit((pp) => ({ ...pp, export: { ...pp.export, capcutCaptions: 'text' } })) }, 'CapCut で編集できる文字'),
+          ),
+          '「見た目そのまま」はこのアプリのフォント・大きさ・位置・縁取りのまま入ります(CapCut で文字は直せません)。「編集できる文字」は CapCut で直せますが、見た目は近い値になります',
+        ),
     button(p.capcut ? 'CapCut に素材入りのプロジェクトを作る' : 'CapCut に書き出す', () => void startCapcutExport(), { class: 'primary', disabled: !st?.exists || (!st.version && !p.capcut) }),
     jobsBox(['capcut']),
     h('p', { class: 'hint' }, 'iPhone で続きを編集するには: Mac の CapCut でこのプロジェクトを開き、クラウド(スペース)にアップロードすると、同じアカウントの iPhone の CapCut から開けます。'),

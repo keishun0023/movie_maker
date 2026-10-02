@@ -633,8 +633,45 @@ export async function startCapcutExport(): Promise<void> {
     return;
   }
   const p = JSON.parse(JSON.stringify(store.p)) as Project;
+  // テロップを「見た目そのまま」で入れるときは、プレビューと同じ描き方で画像にする(テロップの所だけ切り出す)
+  const caps: { outStart: number; outEnd: number; png: string; x: number; y: number; w: number; h: number }[] = [];
+  if (!p.capcut && (p.export.capcutCaptions ?? 'image') === 'image') {
+    const timeline = timelineOf(p)!;
+    const W = p.export.width;
+    const H = p.export.height;
+    const full = document.createElement('canvas');
+    full.width = W;
+    full.height = H;
+    const g = full.getContext('2d')!;
+    const crop = document.createElement('canvas');
+    for (const t of captionOutputTimings(p.captions, timeline)) {
+      const c = p.captions.find((x) => x.id === t.id)!;
+      if (!c.text.trim()) continue;
+      const style = effectiveStyle(p.style, c);
+      const font = renderFontFor(style);
+      if (!font) {
+        toast('フォントの読み込みが終わっていません。少し待ってから再度お試しください。', 'error');
+        return;
+      }
+      g.clearRect(0, 0, W, H);
+      const box = drawCaption(g, c.text, style, font, W, H);
+      // 縁取り・影・帯の分だけ広げる
+      const pad = Math.ceil(style.strokeWidth + (style.shadow ? style.shadowBlur + Math.abs(style.shadowOffsetY) : 0) + (style.band ? style.bandPadding : 0) + 8);
+      const x = Math.max(0, Math.floor(box.x - pad));
+      const y = Math.max(0, Math.floor(box.y - pad));
+      const w = Math.min(W, Math.ceil(box.x + box.w + pad)) - x;
+      const h = Math.min(H, Math.ceil(box.y + box.h + pad)) - y;
+      if (w <= 0 || h <= 0) continue;
+      crop.width = w;
+      crop.height = h;
+      const cg = crop.getContext('2d')!;
+      cg.clearRect(0, 0, w, h);
+      cg.drawImage(full, x, y, w, h, 0, 0, w, h);
+      caps.push({ outStart: t.outStart, outEnd: t.outEnd, png: crop.toDataURL('image/png'), x, y, w, h });
+    }
+  }
   try {
-    const job = await api.startCapcut(p.id, p);
+    const job = await api.startCapcut(p.id, p, caps);
     watchJob(job, (j) => {
       if (j.status === 'done') {
         const r = j.result as { draftName: string; appVersion: string; notes: string[] };

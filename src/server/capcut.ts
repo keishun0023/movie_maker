@@ -27,6 +27,7 @@ import { requireTool, run } from './proc.js';
 import { timeStretch } from '../shared/stretch.js';
 import { sceneSpans } from './export.js';
 import { sub } from './store.js';
+import { fontEntry } from './fonts.js';
 
 type Json = Record<string, unknown>;
 
@@ -322,7 +323,7 @@ function rgb01(c: string): [number, number, number] {
 }
 
 /** テロップ1つ分の文字素材。大きさ・縁取りの数値は CapCut の画面上の見た目に近づけた目安 */
-function textMaterial(text: string, st: CaptionStyle, W: number): Json {
+function textMaterial(text: string, st: CaptionStyle, W: number, fontPath = ''): Json {
   // CapCut の文字サイズ 1 は 1080 幅の画面でおよそ 3.4px(実測に基づく目安。ずれたら CapCut でまとめて調整)
   const size = Math.round(((st.size * (1080 / W)) / 3.4) * 10) / 10;
   const style: Json = {
@@ -334,6 +335,7 @@ function textMaterial(text: string, st: CaptionStyle, W: number): Json {
     underline: false,
     strokes: [],
   };
+  if (fontPath) style.font = { id: '', path: fontPath };
   let checkFlag = 7;
   if (st.strokeWidth > 0) {
     // 縁取りの太さ: CapCut の 0〜100 を 0〜0.2 で持つ。文字サイズに対する割合から換算
@@ -429,6 +431,54 @@ async function registerDraft(draftsDir: string, dir: string, draftId: string, dr
   await fsp.writeFile(indexFile, JSON.stringify(index), 'utf8');
 }
 
+/** 映像・画像の素材(CapCut の materials.videos の1項目) */
+function mediaMaterial(id: string, f: { file: string; localId: string }, photo: boolean, durUs: number, w: number, h: number, hasAudio: boolean): Json {
+  return {
+    aigc_type: 'none',
+    category_id: '',
+    category_name: 'local',
+    check_flag: 62978047,
+    crop: { lower_left_x: 0, lower_left_y: 1, lower_right_x: 1, lower_right_y: 1, upper_left_x: 0, upper_left_y: 0, upper_right_x: 1, upper_right_y: 0 },
+    crop_ratio: 'free',
+    crop_scale: 1,
+    duration: durUs,
+    extra_type_option: 0,
+    formula_id: '',
+    freeze: null,
+    has_audio: hasAudio,
+    height: h,
+    id,
+    intensifies_audio_path: '',
+    intensifies_path: '',
+    is_ai_generate_content: false,
+    is_copyright: false,
+    is_text_edit_overdub: false,
+    is_unified_beauty_mode: false,
+    local_id: '',
+    local_material_id: f.localId,
+    material_id: '',
+    material_name: path.basename(f.file),
+    material_url: '',
+    matting: { flag: 0, has_use_quick_brush: false, has_use_quick_eraser: false, interactiveTime: [], path: '', strokes: [] },
+    media_path: '',
+    object_locked: null,
+    origin_material_id: '',
+    path: f.file,
+    picture_from: 'none',
+    picture_set_category_id: '',
+    picture_set_category_name: '',
+    request_id: '',
+    reverse_intensifies_path: '',
+    reverse_path: '',
+    source_platform: 0,
+    stable: { matrix_path: '', stable_level: 0, time_range: { duration: 0, start: 0 } },
+    team_id: '',
+    type: photo ? 'photo' : 'video',
+    video_algorithm: { algorithms: [], deflicker: null, motion_blur_config: null, noise_reduction: null, path: '', quality_enhance: null, time_range: null },
+    width: w,
+  };
+}
+
 /** 背景(シーンごと)とワイプの映像トラックを作る */
 async function addVisualTracks(b: DraftBuilder, p: Project, tl: Timeline, ctx: JobContext, notes: string[]): Promise<void> {
   const { width: W, height: H, fps } = p.export;
@@ -445,50 +495,7 @@ async function addVisualTracks(b: DraftBuilder, p: Project, tl: Timeline, ctx: J
     const durUs = photo ? 10_800_000_000 : Math.round((a.durationSec ?? 0) * 1e6);
     const f = await b.importFile(mediaFile(p, a), photo ? 'photo' : 'video', a.name, photo ? 5_000_000 : durUs, a.width ?? W, a.height ?? H);
     const id = uuid();
-    b.add('videos', {
-      aigc_type: 'none',
-      category_id: '',
-      category_name: 'local',
-      check_flag: 62978047,
-      crop: { lower_left_x: 0, lower_left_y: 1, lower_right_x: 1, lower_right_y: 1, upper_left_x: 0, upper_left_y: 0, upper_right_x: 1, upper_right_y: 0 },
-      crop_ratio: 'free',
-      crop_scale: 1,
-      duration: durUs,
-      extra_type_option: 0,
-      formula_id: '',
-      freeze: null,
-      has_audio: !photo && !!a.audioStreams?.length,
-      height: a.height ?? H,
-      id,
-      intensifies_audio_path: '',
-      intensifies_path: '',
-      is_ai_generate_content: false,
-      is_copyright: false,
-      is_text_edit_overdub: false,
-      is_unified_beauty_mode: false,
-      local_id: '',
-      local_material_id: f.localId,
-      material_id: '',
-      material_name: path.basename(f.file),
-      material_url: '',
-      matting: { flag: 0, has_use_quick_brush: false, has_use_quick_eraser: false, interactiveTime: [], path: '', strokes: [] },
-      media_path: '',
-      object_locked: null,
-      origin_material_id: '',
-      path: f.file,
-      picture_from: 'none',
-      picture_set_category_id: '',
-      picture_set_category_name: '',
-      request_id: '',
-      reverse_intensifies_path: '',
-      reverse_path: '',
-      source_platform: 0,
-      stable: { matrix_path: '', stable_level: 0, time_range: { duration: 0, start: 0 } },
-      team_id: '',
-      type: photo ? 'photo' : 'video',
-      video_algorithm: { algorithms: [], deflicker: null, motion_blur_config: null, noise_reduction: null, path: '', quality_enhance: null, time_range: null },
-      width: a.width ?? W,
-    });
+    b.add('videos', mediaMaterial(id, f, photo, durUs, a.width ?? W, a.height ?? H, !photo && !!a.audioStreams?.length));
     videoMats.set(a.id, { id, asset: a });
     return id;
   };
@@ -608,7 +615,26 @@ async function addVisualTracks(b: DraftBuilder, p: Project, tl: Timeline, ctx: J
   if (loopedNote) notes.push('素材の動画がカットより短い所は、動画を最初から繰り返して埋めています。');
 }
 
-export async function exportCapcut(p: Project, draftsDir: string, ctx: JobContext): Promise<CapcutResult> {
+/** 画面で描いたテロップ画像(見た目そのままで CapCut に入れる用)。位置・大きさは出力画面の px */
+export interface CapcutCaptionImage {
+  outStart: number;
+  outEnd: number;
+  file: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** 画面の縦横比(CapCut の「比率」)。original にすると最初の素材の比率に変わってしまうため、決まった比率を書く */
+export function canvasRatio(W: number, H: number): string {
+  const r = W / H;
+  const known: [string, number][] = [['9:16', 9 / 16], ['16:9', 16 / 9], ['1:1', 1], ['4:3', 4 / 3], ['3:4', 3 / 4], ['4:5', 4 / 5]];
+  const hit = known.find(([, v]) => Math.abs(v - r) < 0.01);
+  return hit ? hit[0] : 'original';
+}
+
+export async function exportCapcut(p: Project, draftsDir: string, ctx: JobContext, capImages: CapcutCaptionImage[] = []): Promise<CapcutResult> {
   const notes: string[] = [];
   const tl = timelineOf(p);
   if (!p.narration || !tl) throw new Error('ナレーション音声を設定してください。');
@@ -740,23 +766,58 @@ export async function exportCapcut(p: Project, draftsDir: string, ctx: JobContex
       }
     }
 
-    // 5. テロップ(CapCut の文字として入れるので、あとから文字・位置・フォントを直せる)
+    // 5. テロップ
     ctx.progress(0.8, 'テロップを並べています');
-    const texts = b.track('text', 'テロップ');
-    for (const t of captionOutputTimings(p.captions, tl)) {
-      const c = p.captions.find((x) => x.id === t.id);
-      if (!c || !c.text.trim()) continue;
-      const f0 = sampleToFrame(t.outStart, fps);
-      const f1 = Math.min(total, Math.max(f0 + 1, sampleToFrame(t.outEnd, fps)));
-      if (f1 <= f0) continue;
-      const st = { ...p.style, ...(c.style ?? {}) } as CaptionStyle;
-      const mat = textMaterial(c.text.trim(), st, W);
-      b.add('texts', mat);
-      const seg = segment(mat.id as string, us(f0), us(f1) - us(f0), null, { extra_material_refs: b.companions('text'), render_index: 14000 });
-      seg.clip = { alpha: 1, flip: { horizontal: false, vertical: false }, rotation: 0, scale: { x: 1, y: 1 }, transform: { x: st.x * 2 - 1, y: 1 - st.y * 2 } };
-      texts.push(seg);
+    if (capImages.length) {
+      // 見た目そのまま: このアプリで描いたテロップを画像で入れる(フォント・大きさ・位置・縁取りが一致する)
+      const segs = b.track('video', 'テロップ');
+      for (const c of capImages) {
+        const f0 = sampleToFrame(c.outStart, fps);
+        const f1 = Math.min(total, Math.max(f0 + 1, sampleToFrame(c.outEnd, fps)));
+        if (f1 <= f0 || c.w <= 0 || c.h <= 0) continue;
+        const f = await b.importFile(c.file, 'photo', path.basename(c.file), 5_000_000, c.w, c.h);
+        const id = uuid();
+        b.add('videos', mediaMaterial(id, f, true, 10_800_000_000, c.w, c.h, false));
+        const durUs = us(f1) - us(f0);
+        const seg = segment(id, us(f0), durUs, { start: 0, duration: durUs }, { extra_material_refs: b.companions('video'), volume: 0, render_index: 2 });
+        // CapCut の拡大率 1 は「画面に収まる大きさ」
+        const sc = 1 / Math.min(W / c.w, H / c.h);
+        seg.clip = { alpha: 1, flip: { horizontal: false, vertical: false }, rotation: 0, scale: { x: sc, y: sc }, transform: { x: (c.x + c.w / 2 - W / 2) / (W / 2), y: -(c.y + c.h / 2 - H / 2) / (H / 2) } };
+        segs.push(seg);
+      }
+      notes.push('テロップは、このアプリの見た目そのままの画像で入れました(CapCut で文字を直すことはできません。直したい場合は「CapCut で編集できる文字」で書き出してください)。');
+    } else {
+      // CapCut の文字として入れる(あとから文字・位置を直せる。見た目は近い値)
+      const texts = b.track('text', 'テロップ');
+      const fontFiles = new Map<string, string>();
+      for (const t of captionOutputTimings(p.captions, tl)) {
+        const c = p.captions.find((x) => x.id === t.id);
+        if (!c || !c.text.trim()) continue;
+        const f0 = sampleToFrame(t.outStart, fps);
+        const f1 = Math.min(total, Math.max(f0 + 1, sampleToFrame(t.outEnd, fps)));
+        if (f1 <= f0) continue;
+        const st = { ...p.style, ...(c.style ?? {}) } as CaptionStyle;
+        // フォントは下書きの中にコピーして指定する(CapCut が読めない場合は標準フォントになる)
+        let fontPath = fontFiles.get(st.fontId);
+        if (fontPath === undefined) {
+          const fe = fontEntry(st.fontId);
+          fontPath = '';
+          if (fe && !fe.isCollection && fs.existsSync(fe.file)) {
+            const dst = path.join(dir, 'assets', 'font', path.basename(fe.file));
+            await fsp.mkdir(path.dirname(dst), { recursive: true });
+            if (!fs.existsSync(dst)) await fsp.copyFile(fe.file, dst);
+            fontPath = dst;
+          }
+          fontFiles.set(st.fontId, fontPath);
+        }
+        const mat = textMaterial(c.text.trim(), st, W, fontPath);
+        b.add('texts', mat);
+        const seg = segment(mat.id as string, us(f0), us(f1) - us(f0), null, { extra_material_refs: b.companions('text'), render_index: 14000 });
+        seg.clip = { alpha: 1, flip: { horizontal: false, vertical: false }, rotation: 0, scale: { x: 1, y: 1 }, transform: { x: st.x * 2 - 1, y: 1 - st.y * 2 } };
+        texts.push(seg);
+      }
+      notes.push('テロップは CapCut の文字で入れました。文字の大きさ・縁取りは近い値にしてありますが、見た目が違う場合は CapCut でまとめて調整するか、「見た目そのまま(画像)」で書き出してください。');
     }
-    notes.push('テロップは CapCut の標準フォントで入ります。文字の大きさ・縁取りは近い値にしてありますが、見た目が違う場合は CapCut でテロップをまとめて選んで調整してください。');
 
     // 6. 本体ファイル(見本プロジェクトの形式・版の印を引き継ぎ、中身を入れ替える)
     ctx.progress(0.9, 'プロジェクトファイルを書き込んでいます');
@@ -778,7 +839,7 @@ export async function exportCapcut(p: Project, draftsDir: string, ctx: JobContex
     draft.duration = totalUs;
     draft.fps = fps;
     const canvas = (draft.canvas_config ?? {}) as Json;
-    draft.canvas_config = { ...canvas, width: W, height: H, ratio: 'original' };
+    draft.canvas_config = { ...canvas, width: W, height: H, ratio: canvasRatio(W, H) };
     if (typeof draft.create_time === 'number') draft.create_time = Math.floor(nowMs / 1000);
     if (typeof draft.update_time === 'number') draft.update_time = Math.floor(nowMs / 1000);
     if (typeof draft.static_cover_image_path === 'string') draft.static_cover_image_path = '';
