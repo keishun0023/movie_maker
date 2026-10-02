@@ -328,6 +328,11 @@ export interface Project {
     /** caption: テロップ1つ=1カット / even: 長さの目安で均等 / mix: 速いカットと遅いカットを織り交ぜる */
     rhythm?: 'even' | 'mix' | 'caption' | 'reference';
   };
+  /**
+   * CapCut で作った下書きから読み込んだ場合の元の下書き。音声(無音カット済み)とテロップは CapCut のものを使い、
+   * このアプリでは無音カット・文字起こし・速さ・間の調整をしない。書き出しは元の下書きに素材を加えた複製を作る
+   */
+  capcut?: { dir: string; name: string; draftId: string; mtime: number; importedAt: string };
   /** 文字起こしの直し(「白球」→「白玉」など)。テロップを作り直すたびに当てはめ、認識のヒントにも使う */
   textFixes?: TextFix[];
   /** テロップの長さ: normal(2行まで) / short(1行・短く区切る) */

@@ -94,6 +94,9 @@ export const api = {
   editedAudio: (projectId: string, sourceKey: string, timeline: Timeline) => call<{ url: string }>('POST', `/api/projects/${projectId}/edited-audio`, { sourceKey, timeline }),
   startExport: (projectId: string, project: Project, captions: { id: string; outStart: number; outEnd: number; text: string; png: string }[]) =>
     call<JobInfo>('POST', `/api/projects/${projectId}/exports`, { project, captions }),
+  capcutDrafts: (dir?: string) =>
+    call<{ dir: string; drafts: { name: string; dir: string; durationSec: number; modified: number; readable: boolean; captions: number; audioPieces: number }[] }>('GET', '/api/capcut/drafts' + (dir ? `?dir=${encodeURIComponent(dir)}` : '')),
+  capcutImport: (projectId: string, draftDir: string) => call<JobInfo>('POST', `/api/projects/${projectId}/capcut-import`, { draftDir }),
   capcutInfo: (dir?: string) => call<{ dir: string; defaultDir: string; exists: boolean; projects: number; version: string | null }>('GET', '/api/capcut' + (dir ? `?dir=${encodeURIComponent(dir)}` : '')),
   startCapcut: (projectId: string, project: Project) => call<JobInfo>('POST', `/api/projects/${projectId}/capcut`, { project }),
   exports: (projectId: string) => call<{ name: string; size: number; mtime: string }[]>('GET', `/api/projects/${projectId}/exports`),

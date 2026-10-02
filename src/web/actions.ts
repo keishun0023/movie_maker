@@ -556,6 +556,74 @@ export async function startExport(): Promise<void> {
   }
 }
 
+/**
+ * CapCut で作った下書き(無音カット・テロップ済み)から始める。
+ * 音声は1本の WAV にしてナレーションに、テロップは CapCut のものをそのまま使い、カット割りを作る。
+ */
+export async function importFromCapcut(draftDir: string): Promise<void> {
+  const p = store.p;
+  if ((p.captions.length > 0 || p.transcript) && !confirm('今のテロップ・カットを、CapCut のプロジェクトのもので置き換えます(割り当てた素材は、同じ時間のカットに引き継ぎます)。続けますか?')) return;
+  try {
+    await store.save();
+    const job = await api.capcutImport(p.id, draftDir);
+    const done = await jobPromise(job);
+    if (done.status !== 'done') {
+      if (done.status === 'failed') toast('CapCut のプロジェクトを読み込めませんでした: ' + done.error, 'error', 10000);
+      return;
+    }
+    const r = done.result as {
+      asset: Asset;
+      captions: { text: string; startUs: number; endUs: number }[];
+      width: number;
+      height: number;
+      draft: { dir: string; name: string; id: string; mtime: number };
+      notes: string[];
+    };
+    store.commit((pp) => ({ ...pp, assets: [...pp.assets, r.asset] }));
+    const nj = await api.prepareNarration(p.id, r.asset, 0);
+    const nd = await jobPromise(nj);
+    if (nd.status !== 'done') {
+      if (nd.status === 'failed') toast('音声の準備に失敗しました: ' + nd.error, 'error');
+      return;
+    }
+    const narration = (nd.result as { narration: Project['narration'] }).narration!;
+    const analysis = await api.analysis(p.id, narration.sourceKey);
+    store.state.analysis = analysis;
+    const toS = (us: number) => Math.max(0, Math.min(narration.durationSamples, Math.round((us / 1e6) * SR)));
+    // テロップは CapCut のもの。台本の表どおりのカット割りなどに使えるよう、テロップごとに「語」も作る
+    const tokens = r.captions.map((c, i) => ({ id: `cc${i}`, text: c.text.replace(/\s+/g, ''), start: toS(c.startUs), end: Math.max(toS(c.startUs) + 1, toS(c.endUs)), p: 1, seg: i, timing: 'token' as const }));
+    const captions: Caption[] = r.captions.map((c, i) => ({
+      id: newId('cap'),
+      srcStart: tokens[i]!.start,
+      srcEnd: tokens[i]!.end,
+      tokenIds: [tokens[i]!.id],
+      rawText: c.text,
+      text: c.text,
+      textEdited: true,
+      timingEdited: true,
+    }));
+    store.commit((pp) => {
+      const next: Project = {
+        ...pp,
+        narration,
+        capcut: { dir: r.draft.dir, name: r.draft.name, draftId: r.draft.id, mtime: r.draft.mtime, importedAt: new Date().toISOString() },
+        transcript: { engine: 'capcut', model: 'CapCut のテロップ', createdAt: new Date().toISOString(), basis: 'source', tokens, notes: [] },
+        captions,
+        scenes: pp.scenes.length ? pp.scenes : [{ id: newId('scn'), srcStart: 0, srcEnd: narration.durationSamples, bg: null, inset: null }],
+        cut: { ...pp.cut, keepRanges: [] },
+        export: { ...pp.export, width: r.width || pp.export.width, height: r.height || pp.export.height },
+      };
+      return autoEdit(next, analysis, { keepManual: false, recut: true });
+    });
+    await store.save();
+    for (const n of r.notes) toast(n, 'error', 8000);
+    toast(`CapCut の「${r.draft.name}」を読み込みました(テロップ ${captions.length} 個)。「2 自動編集」でカット割りと素材の割り当てをしてください。`, 'ok', 8000);
+    store.setUi({ step: 2 });
+  } catch (e) {
+    toast((e as Error).message, 'error');
+  }
+}
+
 /** CapCut のプロジェクト(下書き)として書き出す */
 export async function startCapcutExport(): Promise<void> {
   await store.save();

@@ -94,6 +94,8 @@ export function segmentOptionsFor(p: Project): SegmentOptions {
 /** 無音候補と削除区間・対応表を再計算する(テロップ・シーンの元音声時刻は変えない) */
 export function recomputeCut(p: Project, a: AnalysisData): Project {
   const dur = p.narration?.durationSamples ?? a.durationSamples;
+  // CapCut から読み込んだ音声は CapCut で編集済みなので、そのまま使う(カット・速さ・間は CapCut 側で)
+  if (p.capcut) return { ...p, silenceCandidates: [], timeline: buildTimeline(dur, [], 0) };
   let cands = detectSilences(a, p.cut.params.sensitivityDb, 50);
   if (p.transcript && p.cut.protectSpeech !== false) cands = protectBySpeech(cands, p.transcript.tokens, a, p.cut.params.sensitivityDb);
   const cuts = decideCuts(cands, p.cut.params, dur, p.cut.keepRanges);
@@ -114,7 +116,7 @@ export function pausesOf(scenes: Scene[]): PauseInsert[] {
 /** シーンの速さ・境界が対応表と食い違っていれば対応表を作り直す */
 export function ensureTimelineSpeeds(p: Project, a: AnalysisData): Project {
   if (!p.narration || !p.timeline) return p;
-  const want = speedKeyOf(speedRangesOf(p.scenes)) + pauseKeyOf(pausesOf(p.scenes));
+  const want = p.capcut ? '' : speedKeyOf(speedRangesOf(p.scenes)) + pauseKeyOf(pausesOf(p.scenes));
   if ((p.timeline.speedKey ?? '') === want) return p;
   const next = recomputeCut(p, a);
   return { ...next, captions: markCaptionReview(next.captions, next.timeline) };
@@ -172,6 +174,7 @@ export interface AutoEditOptions {
 /** 認識結果と解析データから、カット・テロップ・シーンを自動生成する */
 export function autoEdit(p: Project, a: AnalysisData, opt: AutoEditOptions = { keepManual: true }): Project {
   if (!p.narration) return p;
+  if (p.capcut) return capcutLayout(p, a, opt);
   let next: Project = p;
   if (p.transcript) {
     next = { ...next, transcript: { ...p.transcript, tokens: flagTokens(p.transcript.tokens, a, p.cut.params.sensitivityDb) } };
@@ -233,6 +236,23 @@ export function referenceRowsForScenes(p: Project, scenes: Scene[], texts: strin
     });
   }
   return alignCutsToReference(texts, rows).map((r) => (r >= 0 ? [r] : []));
+}
+
+/** CapCut から読み込んだプロジェクト: テロップは CapCut のまま、カット割りだけ作り直す */
+function capcutLayout(p: Project, a: AnalysisData, opt: AutoEditOptions): Project {
+  const next = recomputeCut(p, a);
+  const tl = next.timeline;
+  const dur = next.narration!.durationSamples;
+  const caps = next.captions;
+  const manualScenes = opt.keepManual && !opt.recut && p.scenes.length > 1 && p.scenes.some((s) => s.boundaryEdited);
+  if (manualScenes) return { ...next, scenes: normalizeScenes(p.scenes, dur) };
+  const ref = next.sceneLen.rhythm === 'reference' ? referenceSplitOf(next) : null;
+  const fresh = ref
+    ? scenesAtBreaks(caps, ref.breaks, dur)
+    : next.sceneLen.rhythm === 'caption'
+      ? scenesPerCaption(caps, tl, dur, Math.max(0.6, next.sceneLen.minSec))
+      : cutToLength(next, buildScenes(caps, tl, dur, segmentOptionsFor(next)));
+  return { ...next, scenes: carryOverScenes(p.scenes, fresh) };
 }
 
 /** カット後に表示時間がなくなったテロップなどに確認の印を付ける */

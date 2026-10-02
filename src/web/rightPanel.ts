@@ -23,6 +23,7 @@ import {
   loadShots,
   shotCache,
   rebuildCaptions,
+  importFromCapcut,
   reapplyLayout,
   runAiAssign,
   applyAutoMotions,
@@ -166,7 +167,48 @@ function importView(): HTMLElement {
         ),
       )
     : null;
-  return h('div', { class: 'panel-body' }, narrSection, scriptSection, envSection, button('次へ: 自動編集 →', () => store.setUi({ step: 2 }), { class: 'next', disabled: !narr }));
+  return h('div', { class: 'panel-body' }, capcutImportSection(p), narrSection, scriptSection, envSection, button('次へ: 自動編集 →', () => store.setUi({ step: 2 }), { class: 'next', disabled: !narr }));
+}
+
+// CapCut の下書き一覧(読み込み用)
+let capcutDraftsState: { dir: string; drafts: { name: string; dir: string; durationSec: number; modified: number; readable: boolean; captions: number; audioPieces: number }[] } | null = null;
+let capcutDraftsLoading: string | null = null;
+
+/** CapCut で作った音声・テロップから始める */
+function capcutImportSection(p: Project): HTMLElement {
+  const dirSetting = (p.export.capcutDir ?? '').trim();
+  if (capcutDraftsLoading !== dirSetting) {
+    capcutDraftsLoading = dirSetting;
+    capcutDraftsState = null;
+    void api.capcutDrafts(dirSetting || undefined).then((r) => {
+      capcutDraftsState = r;
+      store.emit('right');
+    }).catch(() => undefined);
+  }
+  const st = capcutDraftsState;
+  const readable = st?.drafts.filter((d) => d.readable && d.audioPieces > 0) ?? [];
+  let chosen = p.capcut?.dir && readable.some((d) => d.dir === p.capcut!.dir) ? p.capcut.dir : readable[0]?.dir ?? '';
+  const fmtDate = (ms: number) => new Date(ms).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  return section(
+    'CapCut で作った音声・テロップから始める',
+    h('p', { class: 'hint' }, 'CapCut で無音カット・テロップまで作ったプロジェクトを読み込み、このアプリでカット割りと素材の割り当て(AI)だけをします。書き出すと、元のプロジェクトに素材を入れた複製が CapCut にできます(元のプロジェクトは変更しません)。'),
+    p.capcut ? h('div', { class: 'ok-box' }, `読み込み済み: ${p.capcut.name}(${fmtDate(Date.parse(p.capcut.importedAt))})`) : null,
+    !st
+      ? h('p', { class: 'hint' }, 'CapCut のプロジェクトを探しています…')
+      : readable.length === 0
+        ? h('p', { class: 'warn' }, st.drafts.length ? `CapCut のプロジェクトを読み取れませんでした(${st.drafts.length} 件。暗号化されている可能性があります)。` : `CapCut のプロジェクトが見つかりません(${st.dir})。`)
+        : h(
+            'div',
+            null,
+            field(
+              'プロジェクト',
+              select(chosen, readable.map((d) => [d.dir, `${d.name}(${fmtSec(d.durationSec)}・テロップ ${d.captions} 個・${fmtDate(d.modified)})`] as [string, string]), (v) => (chosen = v)),
+              'CapCut を終了してから読み込んでください(終了したときに保存されます)',
+            ),
+            button(p.capcut ? 'CapCut から読み込み直す' : 'このプロジェクトを読み込む', () => chosen && void importFromCapcut(chosen), { class: 'primary' }),
+            jobsBox(['capcut-import', 'narration']),
+          ),
+  );
 }
 
 // ---------- 2. 自動編集 ----------
@@ -326,6 +368,15 @@ function autoView(player: Player): HTMLElement {
       : null,
     h('p', { class: 'hint' }, 'ナレーションだけで字幕なしの動画や、手入力のテロップで作る場合は、文字起こしをせずに「3 確認して修正」へ進めます。'),
   );
+  if (p.capcut) {
+    // CapCut で無音カット・テロップを済ませたプロジェクト: カット割りと素材の割り当てだけ
+    const info = section(
+      'CapCut の音声・テロップ',
+      h('p', { class: 'hint' }, `CapCut の「${p.capcut.name}」の音声とテロップ(${p.captions.length} 個)を使っています。無音カット・文字起こし・話す速さは CapCut 側で済んでいる前提なので、ここではしません。`),
+      button('カット割りを作り直す', () => reapplyLayout((pp) => pp)),
+    );
+    return h('div', { class: 'panel-body' }, info, sceneLenSection(p), aiAssignSection(p), motionSection(p), button('次へ: 確認して修正 →', () => store.setUi({ step: 3 }), { class: 'next' }));
+  }
   return h('div', { class: 'panel-body' }, cutSection, asrSection, sceneLenSection(p), run, aiAssignSection(p), motionSection(p), button('次へ: 確認して修正 →', () => store.setUi({ step: 3 }), { class: 'next' }));
 }
 
@@ -497,7 +548,9 @@ function sceneLenSection(p: Project): HTMLElement {
       : perCap
       ? h('p', { class: 'hint' }, 'テロップ1つにつき1カットで背景を切り替えます。0.6秒未満の短いカットは隣とまとめます(細切れが続くと目が疲れるため)。')
       : checkbox(intro, '冒頭3秒はさらに細かく切る(1カット0.8秒以下)', (v) => setLen(v ? { introSec: 3, introMaxSec: 0.8 } : { introSec: 0, introMaxSec: 0 })),
-    field(
+    p.capcut
+      ? null
+      : field(
       'テロップの長さ',
       h(
         'div',
@@ -507,7 +560,7 @@ function sceneLenSection(p: Project): HTMLElement {
       ),
       '「短く区切る」は「色黒女子は / 全員これ使え」「白玉点滴とか / 美容医療に手出す前に」のように、話の区切りごとにテロップを分けます',
     ),
-    h('p', { class: 'hint' }, '押すとその場でテロップとカットを作り直します(手で直したテロップの文章と、カットへの素材の割り当ては引き継ぎます)。'),
+    h('p', { class: 'hint' }, p.capcut ? '押すとその場でカットを作り直します(カットへの素材の割り当ては引き継ぎます)。' : '押すとその場でテロップとカットを作り直します(手で直したテロップの文章と、カットへの素材の割り当ては引き継ぎます)。'),
   );
 }
 
@@ -857,8 +910,8 @@ function sceneInspector(s: Scene, player: Player): HTMLElement {
       button('前と結合', () => mergeScene(s.id, -1), { disabled: idx === 0 }),
       button('次と結合', () => mergeScene(s.id, 1), { disabled: idx === p.scenes.length - 1 }),
     ),
-    speedSection(s),
-    pauseSection(s, player),
+    p.capcut ? null : speedSection(s),
+    p.capcut ? null : pauseSection(s, player),
     section(
       '背景',
       field(
@@ -1367,7 +1420,9 @@ function capcutSection(p: Project): HTMLElement {
         : h('p', { class: 'hint' }, `CapCut ${st.version} の形式で書き出します(下書きフォルダ: ${st.dir})`);
   return section(
     'CapCut のプロジェクトとして書き出す',
-    h('p', { class: 'hint' }, 'カット済みのナレーション・背景素材(動き付き)・テロップ(文字として編集可)・BGM を、CapCut の編集途中のプロジェクトとして作ります。CapCut を終了した状態で押してください。'),
+    p.capcut
+      ? h('p', { class: 'hint' }, `CapCut の「${p.capcut.name}」を複製し、割り当てた素材(背景・ワイプ)を入れた「${p.capcut.name} 素材入り」を作ります。音声・テロップ・エフェクトは元のプロジェクトのままです(このアプリで直したテロップは反映されません)。CapCut を終了した状態で押してください。`)
+      : h('p', { class: 'hint' }, 'カット済みのナレーション・背景素材(動き付き)・テロップ(文字として編集可)・BGM を、CapCut の編集途中のプロジェクトとして作ります。CapCut を終了した状態で押してください。'),
     status,
     field(
       'CapCut の下書きフォルダ',
@@ -1383,7 +1438,7 @@ function capcutSection(p: Project): HTMLElement {
       }),
       '空欄なら既定の場所。CapCut の「設定 → 下書きの場所」と同じ場所を指定します',
     ),
-    button('CapCut に書き出す', () => void startCapcutExport(), { class: 'primary', disabled: !st?.exists || !st.version }),
+    button(p.capcut ? 'CapCut に素材入りのプロジェクトを作る' : 'CapCut に書き出す', () => void startCapcutExport(), { class: 'primary', disabled: !st?.exists || (!st.version && !p.capcut) }),
     jobsBox(['capcut']),
     h('p', { class: 'hint' }, 'iPhone で続きを編集するには: Mac の CapCut でこのプロジェクトを開き、クラウド(スペース)にアップロードすると、同じアカウントの iPhone の CapCut から開けます。'),
   );

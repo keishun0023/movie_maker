@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import type { Asset, JobInfo, Project, StylePreset, Timeline, Token, Transcript } from '../shared/types.js';
 import { speechChunks, tokensFromChunks } from '../shared/chunks.js';
@@ -10,11 +11,11 @@ import { anthropicKey, anthropicKeySource, geminiKey, geminiKeySource, setAnthro
 import { aiAssign, videoShots, videoStrip } from './ai/assign.js';
 import { outToSrc } from '../shared/timemap.js';
 import { hintTerms, mergeHints } from '../shared/script.js';
-import { buildPreview, importUpload, removeAssetFiles } from './assets.js';
+import { adoptLocalFile, buildPreview, importUpload, removeAssetFiles } from './assets.js';
 import { WhisperCppAdapter } from './asr/whisperCpp.js';
 import { BUILD_INFO, PRESETS_FILE } from './config.js';
 import { cleanupDir, exportBaseName, runExport, type CaptionImage } from './export.js';
-import { defaultDraftsDir, exportCapcut, findSeed } from './capcut.js';
+import { defaultDraftsDir, exportCapcut, exportCapcutInto, findSeed, listCapcutDrafts, parseDraft, readDraftTimeline, renderDraftAudio } from './capcut.js';
 import { fontBytes, fontEntry, listFonts, missingChars, registerProjectFont, scanFonts } from './fonts.js';
 import { readBody, readJson, Router, sendFile, sendJson } from './http.js';
 import { cancelJob, enqueue, getJob, listJobs, retryJob } from './jobs.js';
@@ -623,7 +624,40 @@ router.post('/api/projects/:id/capcut', async (req, res) => {
     label: 'CapCut のプロジェクトに書き出し',
     projectId: id,
     queue: 'export',
-    runner: (ctx) => exportCapcut(project, dir, ctx),
+    // CapCut から読み込んだプロジェクトは、元の下書きに素材を加えた複製を作る
+    runner: (ctx) => (project.capcut ? exportCapcutInto(project, dir, ctx) : exportCapcut(project, dir, ctx)),
+  });
+  sendJson(res, 200, job);
+});
+
+/** CapCut の下書きの一覧(読み込み用) */
+router.get('/api/capcut/drafts', (req, res) => {
+  const dir = (req.query.get('dir') ?? '').trim() || defaultDraftsDir();
+  sendJson(res, 200, { dir, drafts: fs.existsSync(dir) ? listCapcutDrafts(dir) : [] });
+});
+
+/** CapCut の下書きから、音声(1本の WAV にして素材に追加)とテロップを読み込む */
+router.post('/api/projects/:id/capcut-import', async (req, res) => {
+  const id = assertId(req.params.id!);
+  const body = await readJson<{ draftDir: string }>(req, 64 * 1024);
+  const draftDir = String(body.draftDir ?? '');
+  if (!path.isAbsolute(draftDir) || !fs.existsSync(draftDir)) throw new HttpError(400, 'CapCut のプロジェクトが見つかりません');
+  const t = readDraftTimeline(draftDir);
+  if (!t) throw new HttpError(400, 'この CapCut のプロジェクトは読み取れませんでした(暗号化されている可能性があります)');
+  const job = enqueue({
+    type: 'capcut-import',
+    label: 'CapCut のプロジェクトを読み込み',
+    projectId: id,
+    queue: 'export',
+    runner: async (ctx) => {
+      const d = parseDraft(t.draft, draftDir);
+      if (d.audio.length === 0) throw new Error('この CapCut のプロジェクトには音声がありません。');
+      const tmp = path.join(os.tmpdir(), `tdm-capcut-${crypto.randomBytes(4).toString('hex')}.wav`);
+      const notes = await renderDraftAudio(d, tmp, ctx);
+      const asset = await adoptLocalFile(id, tmp, `${d.name}(CapCut の音声).wav`);
+      ctx.progress(1, '完了');
+      return { asset, captions: d.captions, width: d.width, height: d.height, fps: d.fps, draft: { dir: draftDir, name: d.name, id: d.id, mtime: t.mtime }, notes };
+    },
   });
   sendJson(res, 200, job);
 });

@@ -180,3 +180,28 @@ export async function removeAssetFiles(projectId: string, asset: Asset): Promise
     await fsp.rm(sub(projectId, rel), { force: true }).catch(() => undefined);
   }
 }
+
+/** サーバー側で作ったファイル(CapCut から読み込んだ音声など)を素材として取り込む。元のファイルは移動する */
+export async function adoptLocalFile(projectId: string, srcFile: string, name: string): Promise<Asset> {
+  const ext = path.extname(name).toLowerCase() || path.extname(srcFile).toLowerCase();
+  const id = 'a' + crypto.randomBytes(6).toString('hex');
+  const rel = path.join('assets', `${id}${ext}`);
+  const dest = sub(projectId, rel);
+  await fsp.mkdir(path.dirname(dest), { recursive: true });
+  await fsp.copyFile(srcFile, dest);
+  await fsp.rm(srcFile, { force: true }).catch(() => undefined);
+  const buf = await fsp.readFile(dest);
+  const base: Asset = {
+    id,
+    kind: 'audio',
+    name,
+    file: rel,
+    size: buf.length,
+    hash: crypto.createHash('sha1').update(buf).digest('hex'),
+    importedAt: new Date().toISOString(),
+    status: 'ok',
+    warnings: [],
+  };
+  const info = describeMedia(await probe(dest), ext);
+  return { ...base, ...info, warnings: [...info.warnings] };
+}

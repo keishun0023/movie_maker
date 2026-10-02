@@ -15,15 +15,16 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { SR, type Asset, type CaptionStyle, type Project } from '../shared/types.js';
+import { SR, type Asset, type CaptionStyle, type Project, type Timeline } from '../shared/types.js';
 import { placeBackground, placeInset } from '../shared/fit.js';
 import { evalMotion, motionExprs, motionOf } from '../shared/motion.js';
 import { frameToSample, sampleToFrame, sourcePiecesForOutput, totalFrames } from '../shared/timemap.js';
 import { timelineOf } from '../shared/project.js';
 import { captionOutputTimings } from '../shared/segment.js';
 import type { JobContext } from './jobs.js';
-import { loadSourcePcm, renderEdited, writeWav } from './media.js';
-import { run } from './proc.js';
+import { loadSourcePcm, readWav, renderEdited, writeWav, type Pcm16 } from './media.js';
+import { requireTool, run } from './proc.js';
+import { timeStretch } from '../shared/stretch.js';
 import { sceneSpans } from './export.js';
 import { sub } from './store.js';
 
@@ -394,6 +395,219 @@ function safeName(s: string): string {
 
 // ---- 書き出し本体 ----
 
+/** CapCut のプロジェクト一覧(root_meta_info.json)に登録する(元のファイルは .bak に残す) */
+async function registerDraft(draftsDir: string, dir: string, draftId: string, draftName: string, mainFile: string, totalUs: number, nowMs: number): Promise<void> {
+  const indexFile = path.join(draftsDir, 'root_meta_info.json');
+  const entry = {
+    draft_cover: '',
+    draft_fold_path: dir,
+    draft_id: draftId,
+    draft_is_ai_shorts: false,
+    draft_is_invisible: false,
+    draft_json_file: mainFile,
+    draft_name: draftName,
+    draft_new_version: '',
+    draft_root_path: draftsDir,
+    draft_timeline_materials_size: 0,
+    tm_draft_create: nowMs * 1000,
+    tm_draft_modified: nowMs * 1000,
+    tm_draft_removed: 0,
+    tm_duration: totalUs,
+  };
+  const rawIndex = fs.existsSync(indexFile) ? await fsp.readFile(indexFile, 'utf8') : null;
+  const index = rawIndex !== null ? (JSON.parse(rawIndex.replace(/^﻿/, '')) as Json) : { all_draft_store: [] };
+  const key =
+    Object.keys(index).find((k) => Array.isArray(index[k]) && (index[k] as Json[]).some((e) => e && typeof e === 'object' && ('draft_fold_path' in e || 'draft_id' in e))) ??
+    Object.keys(index).find((k) => Array.isArray(index[k]) && /draft_store/i.test(k)) ??
+    'all_draft_store';
+  const list = (Array.isArray(index[key]) ? index[key] : []) as Json[];
+  const like = list[0];
+  // 既存の項目と同じ形にそろえる(この版の CapCut が書く項目を引き継ぐ)
+  list.unshift(like ? { ...structuredClone(like), ...entry } : entry);
+  index[key] = list;
+  if (rawIndex !== null) await fsp.writeFile(indexFile + '.bak', rawIndex, 'utf8');
+  await fsp.writeFile(indexFile, JSON.stringify(index), 'utf8');
+}
+
+/** 背景(シーンごと)とワイプの映像トラックを作る */
+async function addVisualTracks(b: DraftBuilder, p: Project, tl: Timeline, ctx: JobContext, notes: string[]): Promise<void> {
+  const { width: W, height: H, fps } = p.export;
+  const us = (frames: number) => Math.round((frames * 1_000_000) / fps);
+  // 2. 背景(シーンごと)
+  const spans = sceneSpans(p, tl, fps);
+  const bgTrack = b.track('video', '背景');
+  const insetTrack: Json[] = [];
+  const videoMats = new Map<string, { id: string; asset: Asset }>();
+  const materialFor = async (a: Asset): Promise<string> => {
+    const hit = videoMats.get(a.id);
+    if (hit) return hit.id;
+    const photo = a.kind === 'image';
+    const durUs = photo ? 10_800_000_000 : Math.round((a.durationSec ?? 0) * 1e6);
+    const f = await b.importFile(mediaFile(p, a), photo ? 'photo' : 'video', a.name, photo ? 5_000_000 : durUs, a.width ?? W, a.height ?? H);
+    const id = uuid();
+    b.add('videos', {
+      aigc_type: 'none',
+      category_id: '',
+      category_name: 'local',
+      check_flag: 62978047,
+      crop: { lower_left_x: 0, lower_left_y: 1, lower_right_x: 1, lower_right_y: 1, upper_left_x: 0, upper_left_y: 0, upper_right_x: 1, upper_right_y: 0 },
+      crop_ratio: 'free',
+      crop_scale: 1,
+      duration: durUs,
+      extra_type_option: 0,
+      formula_id: '',
+      freeze: null,
+      has_audio: !photo && !!a.audioStreams?.length,
+      height: a.height ?? H,
+      id,
+      intensifies_audio_path: '',
+      intensifies_path: '',
+      is_ai_generate_content: false,
+      is_copyright: false,
+      is_text_edit_overdub: false,
+      is_unified_beauty_mode: false,
+      local_id: '',
+      local_material_id: f.localId,
+      material_id: '',
+      material_name: path.basename(f.file),
+      material_url: '',
+      matting: { flag: 0, has_use_quick_brush: false, has_use_quick_eraser: false, interactiveTime: [], path: '', strokes: [] },
+      media_path: '',
+      object_locked: null,
+      origin_material_id: '',
+      path: f.file,
+      picture_from: 'none',
+      picture_set_category_id: '',
+      picture_set_category_name: '',
+      request_id: '',
+      reverse_intensifies_path: '',
+      reverse_path: '',
+      source_platform: 0,
+      stable: { matrix_path: '', stable_level: 0, time_range: { duration: 0, start: 0 } },
+      team_id: '',
+      type: photo ? 'photo' : 'video',
+      video_algorithm: { algorithms: [], deflicker: null, motion_blur_config: null, noise_reduction: null, path: '', quality_enhance: null, time_range: null },
+      width: a.width ?? W,
+    });
+    videoMats.set(a.id, { id, asset: a });
+    return id;
+  };
+
+  let loopedNote = false;
+  for (let si = 0; si < spans.length; si++) {
+    const span = spans[si]!;
+    ctx.progress(0.1 + 0.6 * (si / Math.max(1, spans.length)), `背景を並べています (${si + 1}/${spans.length})`);
+    const bg = span.scene.bg;
+    if (bg) {
+      const a = assetOf(p, bg.assetId);
+      if (a && (a.kind === 'video' || a.kind === 'image')) {
+        const matId = await materialFor(a);
+        const srcW = a.width ?? W;
+        const srcH = a.height ?? H;
+        const pl = placeBackground(srcW, srcH, W, H, bg);
+        // CapCut の拡大率 1 は「画面に収まる大きさ」
+        const fitW = srcW * Math.min(W / srcW, H / srcH);
+        const baseScale = pl.w / fitW;
+        const cx0 = pl.x + pl.w / 2 - W / 2;
+        const cy0 = pl.y + pl.h / 2 - H / 2;
+        const sceneDur = (span.f1 - span.f0) / fps;
+        const mex = motionExprs(motionOf(bg), sceneDur, W, H);
+        const at = (T: number) => {
+          const m = mex ? evalMotion(mex, Math.max(0, T)) : { s: 1, dx: 0, dy: 0 };
+          const lim = (v: number, size: number) => Math.max(-((m.s - 1) * size) / 2, Math.min(((m.s - 1) * size) / 2, v));
+          return { scale: baseScale * m.s, x: (m.s * cx0 + lim(m.dx, W)) / (W / 2), y: -(m.s * cy0 + lim(m.dy, H)) / (H / 2) };
+        };
+        const shake = motionOf(bg)?.type === 'shake';
+        // 背景1シーンを、元素材のどこを使うかで区間に分ける
+        const pieces: { f0: number; f1: number; srcUs: number; speed: number }[] = [];
+        if (a.kind === 'image') {
+          pieces.push({ f0: span.f0, f1: span.f1, srcUs: 0, speed: 1 });
+        } else if (bg.mode === 'synced' && p.narration?.assetId === a.id) {
+          const offset = a.audioStartSec ?? 0;
+          for (const pc of sourcePiecesForOutput(tl, frameToSample(span.f0, fps), frameToSample(span.f1, fps))) {
+            const f0 = Math.max(span.f0, sampleToFrame(pc.outStart, fps));
+            const f1 = Math.min(span.f1, sampleToFrame(pc.outEnd, fps));
+            if (f1 > f0) pieces.push({ f0, f1, srcUs: Math.round((offset + pc.srcStart / SR) * 1e6), speed: pc.speed ?? 1 });
+          }
+          // 隙間ができないよう、区間の端を前の区間の終わりにそろえる
+          for (let k = 0; k < pieces.length; k++) {
+            pieces[k]!.f0 = k === 0 ? span.f0 : pieces[k - 1]!.f1;
+            if (k === pieces.length - 1) pieces[k]!.f1 = span.f1;
+          }
+        } else {
+          const len = a.durationSec ?? sceneDur;
+          let f = span.f0;
+          let pos = Math.min(Math.max(0, bg.startSec), Math.max(0, len - 0.1));
+          while (f < span.f1) {
+            const avail = Math.max(1, Math.floor((len - pos) * fps));
+            const f1 = Math.min(span.f1, f + avail);
+            pieces.push({ f0: f, f1, srcUs: Math.round(pos * 1e6), speed: 1 });
+            f = f1;
+            pos = 0;
+            if (f < span.f1) loopedNote = true;
+          }
+        }
+        const volume = a.kind === 'video' && bg.audio && bg.mode !== 'synced' ? Math.pow(10, bg.volumeDb / 20) : 0;
+        for (const pc of pieces) {
+          const durUs = us(pc.f1) - us(pc.f0);
+          const seg = segment(matId, us(pc.f0), durUs, { start: pc.srcUs, duration: Math.round(durUs * pc.speed) }, {
+            extra_material_refs: b.companions('video', pc.speed),
+            speed: pc.speed,
+            volume,
+            last_nonzero_volume: volume || 1,
+            render_index: 0,
+          });
+          const s0 = at((pc.f0 - span.f0) / fps);
+          seg.clip = { alpha: 1, flip: { horizontal: false, vertical: false }, rotation: 0, scale: { x: s0.scale, y: s0.scale }, transform: { x: s0.x, y: s0.y } };
+          seg.uniform_scale = { on: true, value: 1 };
+          if (mex) {
+            // 動きはキーフレームで再現する(揺れは細かく、それ以外は 0.1 秒ごと)
+            const step = shake ? 2 / fps : 0.1;
+            const t0 = (pc.f0 - span.f0) / fps;
+            const t1 = (pc.f1 - span.f0) / fps;
+            const pts: { t: number; k: ReturnType<typeof at> }[] = [];
+            for (let t = t0; t < t1 - 1e-6; t += step) pts.push({ t: (t - t0) * 1e6, k: at(t) });
+            pts.push({ t: (t1 - t0) * 1e6, k: at(t1) });
+            seg.common_keyframes = [
+              keyframeList('KFTypeScaleX', pts.map((q) => ({ t: q.t, v: q.k.scale }))),
+              keyframeList('KFTypeScaleY', pts.map((q) => ({ t: q.t, v: q.k.scale }))),
+              keyframeList('KFTypePositionX', pts.map((q) => ({ t: q.t, v: q.k.x }))),
+              keyframeList('KFTypePositionY', pts.map((q) => ({ t: q.t, v: q.k.y }))),
+            ];
+            seg.uniform_scale = { on: false, value: 1 };
+          }
+          bgTrack.push(seg);
+        }
+      }
+    }
+    // ワイプ(小窓)
+    const inset = span.scene.inset;
+    const ia = inset ? assetOf(p, inset.assetId) : null;
+    if (inset && ia && (ia.kind === 'image' || ia.kind === 'video') && ia.width && ia.height) {
+      const matId = await materialFor(ia);
+      const f0 = Math.min(span.f1 - 1, span.f0 + Math.round(inset.startSec * fps));
+      const f1 = inset.endSec == null ? span.f1 : Math.min(span.f1, span.f0 + Math.round(inset.endSec * fps));
+      if (f1 > f0) {
+        const pl = placeInset(ia.width, ia.height, W, H, inset);
+        const fitW = ia.width * Math.min(W / ia.width, H / ia.height);
+        const durUs = us(f1) - us(f0);
+        const seg = segment(matId, us(f0), durUs, { start: 0, duration: durUs }, { extra_material_refs: b.companions('video'), volume: 0, render_index: 1 });
+        const sc = pl.w / fitW;
+        seg.clip = {
+          alpha: 1,
+          flip: { horizontal: false, vertical: false },
+          rotation: 0,
+          scale: { x: sc, y: sc },
+          transform: { x: (pl.x + pl.w / 2 - W / 2) / (W / 2), y: -(pl.y + pl.h / 2 - H / 2) / (H / 2) },
+        };
+        insetTrack.push(seg);
+      }
+    }
+  }
+  if (insetTrack.length) b.track('video', 'ワイプ').push(...insetTrack);
+  if (loopedNote) notes.push('素材の動画がカットより短い所は、動画を最初から繰り返して埋めています。');
+}
+
 export async function exportCapcut(p: Project, draftsDir: string, ctx: JobContext): Promise<CapcutResult> {
   const notes: string[] = [];
   const tl = timelineOf(p);
@@ -437,179 +651,8 @@ export async function exportCapcut(p: Project, draftsDir: string, ctx: JobContex
     const narr = await b.importFile(narrWav, 'music', 'ナレーション.wav', totalUs, 0, 0);
     await fsp.rm(narrWav, { force: true });
 
-    // 2. 背景(シーンごと)
-    const spans = sceneSpans(p, tl, fps);
-    const bgTrack = b.track('video', '背景');
-    const insetTrack: Json[] = [];
-    const videoMats = new Map<string, { id: string; asset: Asset }>();
-    const materialFor = async (a: Asset): Promise<string> => {
-      const hit = videoMats.get(a.id);
-      if (hit) return hit.id;
-      const photo = a.kind === 'image';
-      const durUs = photo ? 10_800_000_000 : Math.round((a.durationSec ?? 0) * 1e6);
-      const f = await b.importFile(mediaFile(p, a), photo ? 'photo' : 'video', a.name, photo ? 5_000_000 : durUs, a.width ?? W, a.height ?? H);
-      const id = uuid();
-      b.add('videos', {
-        aigc_type: 'none',
-        category_id: '',
-        category_name: 'local',
-        check_flag: 62978047,
-        crop: { lower_left_x: 0, lower_left_y: 1, lower_right_x: 1, lower_right_y: 1, upper_left_x: 0, upper_left_y: 0, upper_right_x: 1, upper_right_y: 0 },
-        crop_ratio: 'free',
-        crop_scale: 1,
-        duration: durUs,
-        extra_type_option: 0,
-        formula_id: '',
-        freeze: null,
-        has_audio: !photo && !!a.audioStreams?.length,
-        height: a.height ?? H,
-        id,
-        intensifies_audio_path: '',
-        intensifies_path: '',
-        is_ai_generate_content: false,
-        is_copyright: false,
-        is_text_edit_overdub: false,
-        is_unified_beauty_mode: false,
-        local_id: '',
-        local_material_id: f.localId,
-        material_id: '',
-        material_name: path.basename(f.file),
-        material_url: '',
-        matting: { flag: 0, has_use_quick_brush: false, has_use_quick_eraser: false, interactiveTime: [], path: '', strokes: [] },
-        media_path: '',
-        object_locked: null,
-        origin_material_id: '',
-        path: f.file,
-        picture_from: 'none',
-        picture_set_category_id: '',
-        picture_set_category_name: '',
-        request_id: '',
-        reverse_intensifies_path: '',
-        reverse_path: '',
-        source_platform: 0,
-        stable: { matrix_path: '', stable_level: 0, time_range: { duration: 0, start: 0 } },
-        team_id: '',
-        type: photo ? 'photo' : 'video',
-        video_algorithm: { algorithms: [], deflicker: null, motion_blur_config: null, noise_reduction: null, path: '', quality_enhance: null, time_range: null },
-        width: a.width ?? W,
-      });
-      videoMats.set(a.id, { id, asset: a });
-      return id;
-    };
-
-    let loopedNote = false;
-    for (let si = 0; si < spans.length; si++) {
-      const span = spans[si]!;
-      ctx.progress(0.1 + 0.6 * (si / Math.max(1, spans.length)), `背景を並べています (${si + 1}/${spans.length})`);
-      const bg = span.scene.bg;
-      if (bg) {
-        const a = assetOf(p, bg.assetId);
-        if (a && (a.kind === 'video' || a.kind === 'image')) {
-          const matId = await materialFor(a);
-          const srcW = a.width ?? W;
-          const srcH = a.height ?? H;
-          const pl = placeBackground(srcW, srcH, W, H, bg);
-          // CapCut の拡大率 1 は「画面に収まる大きさ」
-          const fitW = srcW * Math.min(W / srcW, H / srcH);
-          const baseScale = pl.w / fitW;
-          const cx0 = pl.x + pl.w / 2 - W / 2;
-          const cy0 = pl.y + pl.h / 2 - H / 2;
-          const sceneDur = (span.f1 - span.f0) / fps;
-          const mex = motionExprs(motionOf(bg), sceneDur, W, H);
-          const at = (T: number) => {
-            const m = mex ? evalMotion(mex, Math.max(0, T)) : { s: 1, dx: 0, dy: 0 };
-            const lim = (v: number, size: number) => Math.max(-((m.s - 1) * size) / 2, Math.min(((m.s - 1) * size) / 2, v));
-            return { scale: baseScale * m.s, x: (m.s * cx0 + lim(m.dx, W)) / (W / 2), y: -(m.s * cy0 + lim(m.dy, H)) / (H / 2) };
-          };
-          const shake = motionOf(bg)?.type === 'shake';
-          // 背景1シーンを、元素材のどこを使うかで区間に分ける
-          const pieces: { f0: number; f1: number; srcUs: number; speed: number }[] = [];
-          if (a.kind === 'image') {
-            pieces.push({ f0: span.f0, f1: span.f1, srcUs: 0, speed: 1 });
-          } else if (bg.mode === 'synced' && p.narration.assetId === a.id) {
-            const offset = a.audioStartSec ?? 0;
-            for (const pc of sourcePiecesForOutput(tl, frameToSample(span.f0, fps), frameToSample(span.f1, fps))) {
-              const f0 = Math.max(span.f0, sampleToFrame(pc.outStart, fps));
-              const f1 = Math.min(span.f1, sampleToFrame(pc.outEnd, fps));
-              if (f1 > f0) pieces.push({ f0, f1, srcUs: Math.round((offset + pc.srcStart / SR) * 1e6), speed: pc.speed ?? 1 });
-            }
-            // 隙間ができないよう、区間の端を前の区間の終わりにそろえる
-            for (let k = 0; k < pieces.length; k++) {
-              pieces[k]!.f0 = k === 0 ? span.f0 : pieces[k - 1]!.f1;
-              if (k === pieces.length - 1) pieces[k]!.f1 = span.f1;
-            }
-          } else {
-            const len = a.durationSec ?? sceneDur;
-            let f = span.f0;
-            let pos = Math.min(Math.max(0, bg.startSec), Math.max(0, len - 0.1));
-            while (f < span.f1) {
-              const avail = Math.max(1, Math.floor((len - pos) * fps));
-              const f1 = Math.min(span.f1, f + avail);
-              pieces.push({ f0: f, f1, srcUs: Math.round(pos * 1e6), speed: 1 });
-              f = f1;
-              pos = 0;
-              if (f < span.f1) loopedNote = true;
-            }
-          }
-          const volume = a.kind === 'video' && bg.audio && bg.mode !== 'synced' ? Math.pow(10, bg.volumeDb / 20) : 0;
-          for (const pc of pieces) {
-            const durUs = us(pc.f1) - us(pc.f0);
-            const seg = segment(matId, us(pc.f0), durUs, { start: pc.srcUs, duration: Math.round(durUs * pc.speed) }, {
-              extra_material_refs: b.companions('video', pc.speed),
-              speed: pc.speed,
-              volume,
-              last_nonzero_volume: volume || 1,
-              render_index: 0,
-            });
-            const s0 = at((pc.f0 - span.f0) / fps);
-            seg.clip = { alpha: 1, flip: { horizontal: false, vertical: false }, rotation: 0, scale: { x: s0.scale, y: s0.scale }, transform: { x: s0.x, y: s0.y } };
-            seg.uniform_scale = { on: true, value: 1 };
-            if (mex) {
-              // 動きはキーフレームで再現する(揺れは細かく、それ以外は 0.1 秒ごと)
-              const step = shake ? 2 / fps : 0.1;
-              const t0 = (pc.f0 - span.f0) / fps;
-              const t1 = (pc.f1 - span.f0) / fps;
-              const pts: { t: number; k: ReturnType<typeof at> }[] = [];
-              for (let t = t0; t < t1 - 1e-6; t += step) pts.push({ t: (t - t0) * 1e6, k: at(t) });
-              pts.push({ t: (t1 - t0) * 1e6, k: at(t1) });
-              seg.common_keyframes = [
-                keyframeList('KFTypeScaleX', pts.map((q) => ({ t: q.t, v: q.k.scale }))),
-                keyframeList('KFTypeScaleY', pts.map((q) => ({ t: q.t, v: q.k.scale }))),
-                keyframeList('KFTypePositionX', pts.map((q) => ({ t: q.t, v: q.k.x }))),
-                keyframeList('KFTypePositionY', pts.map((q) => ({ t: q.t, v: q.k.y }))),
-              ];
-              seg.uniform_scale = { on: false, value: 1 };
-            }
-            bgTrack.push(seg);
-          }
-        }
-      }
-      // ワイプ(小窓)
-      const inset = span.scene.inset;
-      const ia = inset ? assetOf(p, inset.assetId) : null;
-      if (inset && ia && (ia.kind === 'image' || ia.kind === 'video') && ia.width && ia.height) {
-        const matId = await materialFor(ia);
-        const f0 = Math.min(span.f1 - 1, span.f0 + Math.round(inset.startSec * fps));
-        const f1 = inset.endSec == null ? span.f1 : Math.min(span.f1, span.f0 + Math.round(inset.endSec * fps));
-        if (f1 > f0) {
-          const pl = placeInset(ia.width, ia.height, W, H, inset);
-          const fitW = ia.width * Math.min(W / ia.width, H / ia.height);
-          const durUs = us(f1) - us(f0);
-          const seg = segment(matId, us(f0), durUs, { start: 0, duration: durUs }, { extra_material_refs: b.companions('video'), volume: 0, render_index: 1 });
-          const sc = pl.w / fitW;
-          seg.clip = {
-            alpha: 1,
-            flip: { horizontal: false, vertical: false },
-            rotation: 0,
-            scale: { x: sc, y: sc },
-            transform: { x: (pl.x + pl.w / 2 - W / 2) / (W / 2), y: -(pl.y + pl.h / 2 - H / 2) / (H / 2) },
-          };
-          insetTrack.push(seg);
-        }
-      }
-    }
-    if (insetTrack.length) b.track('video', 'ワイプ').push(...insetTrack);
-    if (loopedNote) notes.push('素材の動画がカットより短い所は、動画を最初から繰り返して埋めています。');
+    // 2. 背景(シーンごと)・ワイプ
+    await addVisualTracks(b, p, tl, ctx, notes);
 
     // 3. ナレーション
     const narrMat = uuid();
@@ -776,39 +819,315 @@ export async function exportCapcut(p: Project, draftsDir: string, ctx: JobContex
     });
     await fsp.writeFile(path.join(dir, 'draft_meta_info.json'), JSON.stringify(meta), 'utf8');
 
-    // 8. CapCut のプロジェクト一覧(root_meta_info.json)に登録する(元のファイルは .bak に残す)
-    const indexFile = path.join(draftsDir, 'root_meta_info.json');
-    const entry = {
-      draft_cover: '',
-      draft_fold_path: dir,
-      draft_id: draftId,
-      draft_is_ai_shorts: false,
-      draft_is_invisible: false,
-      draft_json_file: mainFile,
-      draft_name: draftName,
-      draft_new_version: '',
-      draft_root_path: draftsDir,
-      draft_timeline_materials_size: 0,
-      tm_draft_create: nowMs * 1000,
-      tm_draft_modified: nowMs * 1000,
-      tm_draft_removed: 0,
-      tm_duration: totalUs,
-    };
-    const rawIndex = fs.existsSync(indexFile) ? await fsp.readFile(indexFile, 'utf8') : null;
-    const index = rawIndex !== null ? (JSON.parse(rawIndex.replace(/^﻿/, '')) as Json) : { all_draft_store: [] };
-    const key =
-      Object.keys(index).find((k) => Array.isArray(index[k]) && (index[k] as Json[]).some((e) => e && typeof e === 'object' && ('draft_fold_path' in e || 'draft_id' in e))) ??
-      Object.keys(index).find((k) => Array.isArray(index[k]) && /draft_store/i.test(k)) ??
-      'all_draft_store';
-    const list = (Array.isArray(index[key]) ? index[key] : []) as Json[];
-    const like = list[0];
-    // 既存の項目と同じ形にそろえる(この版の CapCut が書く項目を引き継ぐ)
-    list.unshift(like ? { ...structuredClone(like), ...entry } : entry);
-    index[key] = list;
-    if (rawIndex !== null) await fsp.writeFile(indexFile + '.bak', rawIndex, 'utf8');
-    await fsp.writeFile(indexFile, JSON.stringify(index), 'utf8');
+    // 8. CapCut のプロジェクト一覧(root_meta_info.json)に登録する
+    await registerDraft(draftsDir, dir, draftId, draftName, mainFile, totalUs, nowMs);
     ctx.progress(1, '完了');
     return { draftName, draftDir: dir, appVersion: seed.version, notes };
+  } catch (e) {
+    await fsp.rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    throw e;
+  }
+}
+
+// ---- CapCut で作った下書きを読み込む(音声・テロップは CapCut、素材の割り当てはこのアプリ) ----
+
+export interface CapcutDraftSummary {
+  name: string;
+  dir: string;
+  durationSec: number;
+  /** 本体ファイルの更新日時(ms) */
+  modified: number;
+  /** 読み取れたか(暗号化された下書きは読めない) */
+  readable: boolean;
+  captions: number;
+  audioPieces: number;
+}
+
+export interface DraftAudioPiece {
+  file: string;
+  srcStartUs: number;
+  srcDurUs: number;
+  dstStartUs: number;
+  dstDurUs: number;
+  volume: number;
+}
+
+export interface DraftCaption {
+  text: string;
+  startUs: number;
+  endUs: number;
+}
+
+export interface ParsedDraft {
+  name: string;
+  id: string;
+  width: number;
+  height: number;
+  fps: number;
+  durationUs: number;
+  audio: DraftAudioPiece[];
+  captions: DraftCaption[];
+}
+
+/** 下書きの本体を読む。暗号化などで読めなければ null */
+export function readDraftTimeline(dir: string): { draft: Json; file: string; mtime: number } | null {
+  for (const f of TIMELINE_FILES) {
+    const file = path.join(dir, f);
+    if (!fs.existsSync(file)) continue;
+    const j = readJson(file);
+    const inner = j ? unwrapTimeline(j) : null;
+    if (inner) return { draft: inner, file, mtime: fs.statSync(file).mtimeMs };
+  }
+  return null;
+}
+
+/** 下書きの素材のパス(CapCut は下書きフォルダの中のファイルを「##_draftpath_placeholder_…_##」で書く) */
+function resolveDraftPath(p: string, dir: string): string {
+  const r = p.replace(/##_draftpath_placeholder_[^#]*_##/g, dir);
+  return path.isAbsolute(r) ? r : path.join(dir, r);
+}
+
+/** 文字素材の中身から文字だけを取り出す(新しい形式は JSON、古い形式は <font …>[文字]</font>) */
+export function textOfContent(content: unknown): string {
+  if (typeof content !== 'string') return '';
+  const t = content.trim();
+  if (t.startsWith('{')) {
+    try {
+      const j = JSON.parse(t) as { text?: unknown };
+      if (typeof j.text === 'string') return j.text;
+    } catch {
+      // 下へ
+    }
+  }
+  const m = /\[([\s\S]*)\]/.exec(t);
+  if (m && /<[^>]+>/.test(t)) return m[1]!;
+  return t.replace(/<[^>]+>/g, '');
+}
+
+const num = (v: unknown, d = 0) => (typeof v === 'number' && isFinite(v) ? v : d);
+
+/** 下書きから、音声の区間(どのファイルのどこを、どこに置くか)とテロップを取り出す */
+export function parseDraft(draft: Json, dir: string): ParsedDraft {
+  const mats = (draft.materials ?? {}) as Record<string, unknown>;
+  const byId = new Map<string, { kind: string; m: Json }>();
+  for (const [kind, list] of Object.entries(mats)) {
+    if (!Array.isArray(list)) continue;
+    for (const m of list) if (m && typeof m === 'object' && typeof (m as Json).id === 'string') byId.set((m as Json).id as string, { kind, m: m as Json });
+  }
+  const canvas = (draft.canvas_config ?? {}) as Json;
+  const audio: DraftAudioPiece[] = [];
+  const captions: DraftCaption[] = [];
+  let durationUs = num(draft.duration);
+  for (const tr of (Array.isArray(draft.tracks) ? draft.tracks : []) as Json[]) {
+    const type = tr.type;
+    for (const seg of (Array.isArray(tr.segments) ? tr.segments : []) as Json[]) {
+      const target = (seg.target_timerange ?? {}) as Json;
+      const t0 = num(target.start);
+      const td = num(target.duration);
+      if (td <= 0) continue;
+      durationUs = Math.max(durationUs, t0 + td);
+      const mat = byId.get(String(seg.material_id ?? ''));
+      if (!mat) continue;
+      if (type === 'text' && mat.kind === 'texts') {
+        const text = textOfContent(mat.m.content).trim();
+        if (text) captions.push({ text, startUs: t0, endUs: t0 + td });
+        continue;
+      }
+      // 音のある区間(音声トラック、または音の入った動画)
+      const isAudio = type === 'audio' && mat.kind === 'audios';
+      const isVideo = type === 'video' && mat.kind === 'videos' && mat.m.type !== 'photo';
+      if (!isAudio && !isVideo) continue;
+      const volume = num(seg.volume, 1);
+      if (!(volume > 0) || typeof mat.m.path !== 'string' || !mat.m.path) continue;
+      const src = (seg.source_timerange ?? null) as Json | null;
+      audio.push({
+        file: resolveDraftPath(mat.m.path, dir),
+        srcStartUs: num(src?.start),
+        srcDurUs: src ? num(src.duration, td) : td,
+        dstStartUs: t0,
+        dstDurUs: td,
+        volume,
+      });
+    }
+  }
+  captions.sort((a, b) => a.startUs - b.startUs);
+  audio.sort((a, b) => a.dstStartUs - b.dstStartUs);
+  return {
+    name: typeof draft.name === 'string' && draft.name ? draft.name : path.basename(dir),
+    id: typeof draft.id === 'string' ? draft.id : '',
+    width: num(canvas.width, 1080) || 1080,
+    height: num(canvas.height, 1920) || 1920,
+    fps: num(draft.fps, 30) || 30,
+    durationUs,
+    audio,
+    captions,
+  };
+}
+
+/** 下書きフォルダのプロジェクト一覧(新しい順) */
+export function listCapcutDrafts(draftsDir: string): CapcutDraftSummary[] {
+  let names: string[] = [];
+  try {
+    names = fs.readdirSync(draftsDir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
+  } catch {
+    return [];
+  }
+  const out: CapcutDraftSummary[] = [];
+  for (const name of names) {
+    const dir = path.join(draftsDir, name);
+    if (!TIMELINE_FILES.some((f) => fs.existsSync(path.join(dir, f)))) continue;
+    const t = readDraftTimeline(dir);
+    if (!t) {
+      const f = TIMELINE_FILES.map((x) => path.join(dir, x)).find((x) => fs.existsSync(x))!;
+      out.push({ name, dir, durationSec: 0, modified: fs.statSync(f).mtimeMs, readable: false, captions: 0, audioPieces: 0 });
+      continue;
+    }
+    const d = parseDraft(t.draft, dir);
+    out.push({ name: d.name, dir, durationSec: d.durationUs / 1e6, modified: t.mtime, readable: true, captions: d.captions.length, audioPieces: d.audio.length });
+  }
+  return out.sort((a, b) => b.modified - a.modified);
+}
+
+/**
+ * 下書きの音声(全トラックを重ねたもの)を 48kHz ステレオの WAV にする。
+ * 区間ごとに元のファイルの使う所を切り出し、速さを変えた区間は音程を保ったまま伸縮する。
+ */
+export async function renderDraftAudio(d: ParsedDraft, outFile: string, ctx: JobContext): Promise<string[]> {
+  const ffmpeg = requireTool('ffmpeg');
+  const notes: string[] = [];
+  const total = Math.max(1, Math.round((d.durationUs / 1e6) * SR));
+  const acc = new Float32Array(total * 2);
+  const cache = new Map<string, Pcm16 | null>();
+  const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'tdm-capcut-'));
+  try {
+    const files = [...new Set(d.audio.map((a) => a.file))];
+    for (const [i, file] of files.entries()) {
+      ctx.progress(0.1 + 0.6 * (i / Math.max(1, files.length)), `音声を読み込んでいます (${i + 1}/${files.length})`);
+      if (!fs.existsSync(file)) {
+        notes.push(`素材のファイルが見つかりませんでした: ${file}`);
+        cache.set(file, null);
+        continue;
+      }
+      const wav = path.join(tmpDir, `${i}.wav`);
+      const r = await run(ffmpeg, ['-y', '-v', 'error', '-i', file, '-vn', '-ac', '2', '-ar', String(SR), '-c:a', 'pcm_s16le', wav], { signal: ctx.signal });
+      cache.set(file, r.code === 0 && fs.existsSync(wav) ? await readWav(wav) : null);
+    }
+    ctx.progress(0.75, '音声を並べています');
+    for (const pc of d.audio) {
+      const src = cache.get(pc.file);
+      if (!src) continue;
+      const ch = src.channels;
+      const frames = src.data.length / ch;
+      const a = Math.max(0, Math.min(frames, Math.round((pc.srcStartUs / 1e6) * SR)));
+      const b = Math.max(a, Math.min(frames, Math.round(((pc.srcStartUs + pc.srcDurUs) / 1e6) * SR)));
+      const want = Math.round((pc.dstDurUs / 1e6) * SR);
+      if (b <= a || want <= 0) continue;
+      const raw = src.data.subarray(a * ch, b * ch);
+      const piece = Math.abs(b - a - want) > 2 ? timeStretch(raw, ch, want) : raw;
+      const o0 = Math.round((pc.dstStartUs / 1e6) * SR);
+      const len = Math.min(want, piece.length / ch, total - o0);
+      const f = Math.min(Math.round(0.004 * SR), Math.floor(len / 2));
+      for (let k = 0; k < len; k++) {
+        let g = pc.volume;
+        if (k < f) g *= k / f;
+        else if (len - 1 - k < f) g *= (len - 1 - k) / f;
+        for (let c = 0; c < 2; c++) acc[(o0 + k) * 2 + c]! += piece[k * ch + Math.min(c, ch - 1)]! * g;
+      }
+    }
+    const out = new Int16Array(total * 2);
+    for (let i = 0; i < out.length; i++) {
+      const v = acc[i]!;
+      out[i] = v > 32767 ? 32767 : v < -32768 ? -32768 : Math.round(v);
+    }
+    await writeWav(outFile, { sampleRate: SR, channels: 2, data: out });
+  } finally {
+    await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+  return notes;
+}
+
+/**
+ * CapCut で作った下書きに、このアプリで割り当てた素材(背景・ワイプ)を加えた「素材入り」の下書きを新しく作る。
+ * 元の下書きの音声・テロップ・エフェクトはそのまま残す(元の下書きは書き換えない)。
+ */
+export async function exportCapcutInto(p: Project, draftsDir: string, ctx: JobContext): Promise<CapcutResult> {
+  const notes: string[] = [];
+  const tl = timelineOf(p);
+  const from = p.capcut;
+  if (!from || !tl) throw new Error('CapCut から読み込んだプロジェクトではありません。');
+  if (!fs.existsSync(from.dir)) throw new Error(`読み込んだ CapCut のプロジェクトが見つかりません: ${from.dir}`);
+  if (await capcutRunning()) {
+    throw new Error('CapCut が起動しています。CapCut を終了してから、もう一度書き出してください(起動中に書き込むと、CapCut の終了時にプロジェクト一覧から消えてしまいます)。');
+  }
+  const base = readDraftTimeline(from.dir);
+  if (!base) throw new Error('CapCut のプロジェクトを読み取れませんでした(暗号化されている可能性があります)。');
+  if (Math.abs(base.mtime - from.mtime) > 1000) {
+    notes.push('読み込んだ後に CapCut でこのプロジェクトが変更されています。音声やテロップの位置を変えた場合は、素材の位置とずれていることがあります(このアプリで「CapCut から読み込み直す」をすると合わせられます)。');
+  }
+  const baseName = safeName(`${path.basename(from.dir)} 素材入り`);
+  let draftName = baseName;
+  for (let i = 2; fs.existsSync(path.join(draftsDir, draftName)); i++) draftName = `${baseName} (${i})`;
+  const dir = path.join(draftsDir, draftName);
+  ctx.progress(0.03, '元のプロジェクトを複製しています');
+  await fsp.cp(from.dir, dir, { recursive: true });
+  try {
+    const b = new DraftBuilder(dir);
+    await addVisualTracks(b, p, tl, ctx, notes);
+    ctx.progress(0.9, 'プロジェクトファイルを書き込んでいます');
+    const draftId = uuid();
+    const nowMs = Date.now();
+    const draft = structuredClone(base.draft);
+    const materials = (draft.materials ?? {}) as Record<string, Json[]>;
+    for (const [k, list] of Object.entries(b.materials)) materials[k] = [...(Array.isArray(materials[k]) ? materials[k] : []), ...list];
+    draft.materials = materials;
+    // 素材の映像トラックは、元の映像トラックの上(テロップの下)に入れる
+    const tracks = (Array.isArray(draft.tracks) ? draft.tracks : []) as Json[];
+    const ours = b.tracks.filter((t) => (t.segments as Json[]).length > 0);
+    let at = 0;
+    tracks.forEach((t, i) => {
+      if (t.type === 'video') at = i + 1;
+    });
+    draft.tracks = [...tracks.slice(0, at), ...ours, ...tracks.slice(at)];
+    draft.id = draftId;
+    draft.name = draftName;
+    const totalUs = Math.max(num(draft.duration), Math.round((tl.outSamples / SR) * 1e6));
+    draft.duration = totalUs;
+    if (typeof draft.update_time === 'number') draft.update_time = Math.floor(nowMs / 1000);
+    const written: string[] = [];
+    for (const f of TIMELINE_FILES) {
+      const file = path.join(dir, f);
+      if (!fs.existsSync(file)) continue;
+      const raw = readJson(file);
+      const out = raw ? wrapTimeline(raw, draft) : null;
+      if (out) {
+        await fsp.writeFile(file, JSON.stringify(out), 'utf8');
+        written.push(f);
+      }
+    }
+    if (!written.length) throw new Error('CapCut のプロジェクトファイルを書き換えられませんでした。');
+    const mainFile = path.join(dir, written.includes('draft_info.json') ? 'draft_info.json' : written[0]!);
+    const metaFile = path.join(dir, 'draft_meta_info.json');
+    const meta: Json = readJson(metaFile) ?? {};
+    const groups: Json[] = Array.isArray(meta.draft_materials) ? (meta.draft_materials as Json[]) : [];
+    const g0 = groups.find((g) => g.type === 0);
+    if (g0) g0.value = [...(Array.isArray(g0.value) ? (g0.value as Json[]) : []), ...b.metaEntries];
+    else groups.unshift({ type: 0, value: b.metaEntries });
+    Object.assign(meta, {
+      draft_fold_path: dir,
+      draft_id: draftId,
+      draft_json_file: mainFile,
+      draft_materials: groups,
+      draft_name: draftName,
+      draft_root_path: draftsDir,
+      tm_draft_create: nowMs * 1000,
+      tm_draft_modified: nowMs * 1000,
+      tm_duration: totalUs,
+    });
+    await fsp.writeFile(metaFile, JSON.stringify(meta), 'utf8');
+    await registerDraft(draftsDir, dir, draftId, draftName, mainFile, totalUs, nowMs);
+    notes.push('音声・テロップ・エフェクトは元の CapCut のプロジェクトのままです。素材は「背景」「ワイプ」の映像トラックとして入っています(元のプロジェクトは変更していません)。');
+    ctx.progress(1, '完了');
+    return { draftName, draftDir: dir, appVersion: String(((draft.platform ?? {}) as Json).app_version ?? ''), notes };
   } catch (e) {
     await fsp.rm(dir, { recursive: true, force: true }).catch(() => undefined);
     throw e;
