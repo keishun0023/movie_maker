@@ -267,28 +267,34 @@ export async function runExport(input: ExportJobInput, ctx: JobContext): Promise
   ctx.progress(0.58, 'テロップを配置しています');
   const blank = path.join(work, 'blank.png');
   await runOk(ffmpeg, ['-y', '-v', 'error', '-f', 'lavfi', '-i', `color=c=black@0.0:s=${W}x${H},format=rgba`, '-frames:v', '1', blank], { signal });
-  const lines: string[] = [];
-  let cursor = 0;
-  let lastFile = blank;
-  const pushImg = (file: string, frames: number) => {
-    lines.push(`file '${path.basename(file)}'`, `duration ${(frames / fps).toFixed(6)}`);
-    lastFile = file;
-  };
+  // 1フレームごとに画像を1枚ずつ並べる(番号付きの連番画像として読む)。
+  // 表示時間つきの画像の連結(concat)は FFmpeg の版によって時刻の扱いが違い、テロップが一部出ないことがあったため使わない。
+  // 同じ画像はリンクにするので、容量はほとんど増えない
+  const seqDir = path.join(work, 'capseq');
+  await fsp.mkdir(seqDir, { recursive: true });
+  const frameFile: string[] = new Array(total).fill(blank);
   const caps = [...input.captions].sort((a, b) => a.outStart - b.outStart);
   for (const c of caps) {
-    let cf0 = sampleToFrame(c.outStart, fps);
+    const cf0 = Math.max(0, sampleToFrame(c.outStart, fps));
     const cf1 = Math.min(total, sampleToFrame(c.outEnd, fps));
-    cf0 = Math.max(cf0, cursor);
-    if (cf1 <= cf0) continue;
-    if (cf0 > cursor) pushImg(blank, cf0 - cursor);
-    pushImg(c.file, cf1 - cf0);
-    cursor = cf1;
+    for (let f = cf0; f < cf1; f++) frameFile[f] = c.file;
   }
-  if (cursor < total) pushImg(blank, total - cursor);
-  // concat の仕様上、最後の画像をもう一度書くと最後の duration が守られる
-  lines.push(`file '${path.basename(lastFile)}'`);
-  const capList = path.join(work, 'captions.txt');
-  await fsp.writeFile(capList, lines.join('\n') + '\n');
+  const linkInto = async (src: string, dst: string) => {
+    try {
+      await fsp.symlink(src, dst);
+    } catch {
+      try {
+        await fsp.link(src, dst);
+      } catch {
+        await fsp.copyFile(src, dst);
+      }
+    }
+  };
+  for (let f = 0; f < total; f++) {
+    if (f % 200 === 0) signal?.throwIfAborted?.();
+    await linkInto(frameFile[f]!, path.join(seqDir, `${String(f + 1).padStart(6, '0')}.png`));
+  }
+  const capSeq = path.join(seqDir, '%06d.png');
 
   // 4. 音声
   const bgAudioFile = path.join(work, 'bgaudio.wav');
@@ -296,7 +302,7 @@ export async function runExport(input: ExportJobInput, ctx: JobContext): Promise
 
   // 5. 仕上げ
   ctx.progress(0.62, '動画を書き出しています');
-  const args = ['-y', '-v', 'error', '-progress', 'pipe:1', '-nostats', '-i', bgFile, '-f', 'concat', '-safe', '0', '-i', capList, '-i', narrFile];
+  const args = ['-y', '-v', 'error', '-progress', 'pipe:1', '-nostats', '-i', bgFile, '-framerate', String(fps), '-start_number', '1', '-i', capSeq, '-i', narrFile];
   const af: string[] = [];
   const mixIn: string[] = [];
   af.push(`[2:a]volume=${p.mix.narrationDb.toFixed(2)}dB[a0]`);
