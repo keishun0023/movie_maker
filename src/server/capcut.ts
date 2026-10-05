@@ -341,7 +341,8 @@ function textMaterial(text: string, st: CaptionStyle, W: number, fontPath = ''):
     underline: false,
     strokes: [],
   };
-  if (fontPath) style.font = { id: '', path: fontPath };
+  // フォントの指定は、CapCut が読めないと文字が表示されないことがあるため入れない(標準フォントで入る)
+  void fontPath;
   let checkFlag = 7;
   if (st.strokeWidth > 0) {
     // 縁取りの太さ: CapCut の 0〜100 を 0〜0.2 で持つ。文字サイズに対する割合から換算
