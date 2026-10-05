@@ -265,6 +265,8 @@ export interface Scene {
   boundaryEdited?: boolean;
   /** このシーンの話す速さ(0.5〜2.0、初期値 1)。音程は変えずに速さだけ変える */
   speed?: number;
+  /** 速さを手で決めた(「緩急」の自動設定で上書きしない) */
+  speedManual?: boolean;
   /** このカットの後に足す間(ミリ秒)。テンポよく詰めた後でも、ここだけ間を空けたいとき */
   pauseAfterMs?: number;
   /** AI が素材を提案したときの理由(表示用) */
@@ -345,6 +347,8 @@ export interface Project {
   textFixes?: TextFix[];
   /** テロップの長さ: normal(2行まで) / short(1行・短く区切る) */
   captionLen?: 'normal' | 'short';
+  /** 話す速さの緩急(カットごとに速さを変える) */
+  tempo?: import('./tempo.js').TempoSettings;
   /** 素材を割り当てたときに、おまかせで動きも付ける(初期値 true) */
   motionAuto?: boolean;
   /** おまかせの動きの強さ */

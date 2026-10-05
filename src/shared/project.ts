@@ -1,5 +1,6 @@
 // プロジェクトの初期値と、解析結果からカット・テロップ・シーンを組み立てる処理。
 import { applyTextFixes } from './script.js';
+import { tempoSpeeds } from './tempo.js';
 import { alignCutsToReference, parseReferenceTable, splitByReference, type ReferenceSplit } from './reference.js';
 import {
   SCHEMA_VERSION,
@@ -202,7 +203,35 @@ export function autoEdit(p: Project, a: AnalysisData, opt: AutoEditOptions = { k
           ? scenesPerCaption(caps, tl, dur, Math.max(0.6, next.sceneLen.minSec))
           : cutToLength({ ...next, captions: caps }, buildScenes(caps, tl, dur, segmentOptionsFor(next))),
       );
-  return { ...next, captions: markCaptionReview(caps, tl), scenes };
+  return applyTempo({ ...next, captions: markCaptionReview(caps, tl), scenes });
+}
+
+/** カットの文章(カットと重なるテロップ) */
+export function sceneTextsOf(p: Project): string[] {
+  const caps = [...p.captions].sort((a, b) => a.srcStart - b.srcStart);
+  return p.scenes.map((s) =>
+    caps
+      .filter((c) => (c.srcStart + c.srcEnd) / 2 >= s.srcStart && (c.srcStart + c.srcEnd) / 2 < s.srcEnd)
+      .map((c) => c.text.replace(/\n/g, ''))
+      .join(''),
+  );
+}
+
+/** 話す速さの緩急を、各カットの速さに当てはめる(手で速さを決めたカットはそのまま) */
+export function applyTempo(p: Project): Project {
+  const t = p.tempo;
+  if (!t || t.mode === 'off' || p.capcut || p.scenes.length === 0) return p;
+  const speeds = tempoSpeeds(sceneTextsOf(p), p.scenes.map((s) => (s.srcEnd - s.srcStart) / SR), t);
+  return {
+    ...p,
+    scenes: p.scenes.map((s, i) => {
+      if (s.speedManual) return s;
+      const v = speeds[i] ?? 1;
+      const { speed: _old, ...rest } = s;
+      void _old;
+      return v === 1 ? rest : { ...rest, speed: v };
+    }),
+  };
 }
 
 /** 台本の表(素材の指定)の行の切れ目。表がない・文字起こしと合わないときは null */

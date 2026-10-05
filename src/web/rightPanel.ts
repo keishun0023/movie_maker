@@ -1,12 +1,13 @@
 // 右パネル: 手順ごとの設定(取り込み / 自動編集 / 確認して修正 / 書き出し)。
 import { SR, type Asset, type Caption, type CaptionStyle, type CutParams, type CutPresetId, type Motion, type MotionType, type Project, type Scene } from '../shared/types.js';
 import { CUT_PRESETS } from '../shared/silence.js';
-import { presetParams, referenceRowsForScenes, referenceSplitOf, splitScenesToCutLength, timelineOf } from '../shared/project.js';
+import { applyTempo, presetParams, referenceRowsForScenes, referenceSplitOf, splitScenesToCutLength, timelineOf } from '../shared/project.js';
 import { captionOutputTimings, sceneOutputRanges } from '../shared/segment.js';
 import { suggestFromScript } from '../shared/script.js';
 import { DEFAULT_STYLE, effectiveStyle } from '../shared/captionRender.js';
 import { MOTION_LABELS, motionOf } from '../shared/motion.js';
 import { parseReferenceTable } from '../shared/reference.js';
+import { DEFAULT_TEMPO, type TempoMode, type TempoSettings } from '../shared/tempo.js';
 import { outToSrc, srcToOut } from '../shared/timemap.js';
 import { api, mediaUrl } from './api.js';
 import { button, checkbox, colorInput, field, fmtBytes, fmtSec, h, numInput, select, slider, toast } from './dom.js';
@@ -408,7 +409,7 @@ function autoView(player: Player): HTMLElement {
     );
     return h('div', { class: 'panel-body' }, info, sceneLenSection(p), aiAssignSection(p), motionSection(p), button('次へ: 確認して修正 →', () => store.setUi({ step: 3 }), { class: 'next' }));
   }
-  return h('div', { class: 'panel-body' }, cutSection, asrSection, sceneLenSection(p), run, aiAssignSection(p), motionSection(p), button('次へ: 確認して修正 →', () => store.setUi({ step: 3 }), { class: 'next' }));
+  return h('div', { class: 'panel-body' }, cutSection, asrSection, sceneLenSection(p), run, tempoSection(p), aiAssignSection(p), motionSection(p), button('次へ: 確認して修正 →', () => store.setUi({ step: 3 }), { class: 'next' }));
 }
 
 // Gemini の設定状態(APIキーそのものは画面に返さない)
@@ -992,6 +993,53 @@ function sceneInspector(s: Scene, player: Player): HTMLElement {
   );
 }
 
+/** 話す速さの緩急(カットごとに速い所・遅い所を作る) */
+function tempoSection(p: Project): HTMLElement {
+  const t = p.tempo ?? DEFAULT_TEMPO;
+  // つまみを動かしている間は右の欄を作り直さない(つまみが外れないように)
+  const set = (patch: Partial<TempoSettings>, key?: string) =>
+    store.commit((pp) => applyTempo({ ...pp, tempo: { ...(pp.tempo ?? DEFAULT_TEMPO), ...patch } }), key ? { coalesce: key, skip: 'right' } : {});
+  const modes: [TempoMode, string][] = [
+    ['off', 'なし(等速)'],
+    ['script', '台本から(おすすめ)'],
+    ['wave', '波'],
+    ['pulse', 'ときどき速く'],
+  ];
+  const manual = p.scenes.filter((s) => s.speedManual).length;
+  const speeds = p.scenes.map((s) => s.speed ?? 1);
+  const slider2 = (label: string, value: number, min: number, max: number, onChange: (v: number) => void) =>
+    field(label, slider(value, { min, max, step: 0.05, format: (v) => `${v.toFixed(2)}倍`, onChange }));
+  return section(
+    '話す速さの緩急',
+    h('p', { class: 'hint' }, '一律の速さではなく、カットごとに速い所・遅い所を作ります。「台本から」は、数字・商品名・「！」・最後の呼びかけなど大事な所をゆっくり、つなぎや説明を速くします。声の高さは変わりません。'),
+    h('div', { class: 'seg-buttons' }, modes.map(([m, label]) => h('button', { type: 'button', class: t.mode === m ? 'on' : '', onclick: () => (m === 'off' ? resetTempo() : set({ mode: m })) }, label))),
+    t.mode !== 'off'
+      ? h(
+          'div',
+          null,
+          slider2('いちばん速いカット', t.max, 1.1, 1.6, (v) => set({ max: Math.max(v, t.min) }, 'tempo-max')),
+          slider2('いちばん遅いカット', t.min, 0.9, 1.2, (v) => set({ min: Math.min(v, t.max) }, 'tempo-min')),
+          h('p', { class: 'hint' }, `いまの速さ: ${speeds.map((v) => v.toFixed(2)).join(' / ')}${manual ? `(手で変えた ${manual} カットはそのまま)` : ''}`),
+          h('p', { class: 'hint' }, '目安: 速い所は 1.3〜1.4 倍まで(早回しの研究では 1.25〜1.5 倍程度までは聞き取り・理解がほとんど落ちないとされます)。カットごとの速さは「3 確認して修正」でも変えられます。'),
+        )
+      : null,
+  );
+}
+
+/** 緩急をやめて、すべて等速に戻す(手で決めた速さも戻す) */
+function resetTempo() {
+  store.commit((pp) => ({
+    ...pp,
+    tempo: { ...(pp.tempo ?? DEFAULT_TEMPO), mode: 'off' },
+    scenes: pp.scenes.map((s) => {
+      const { speed: _s, speedManual: _m, ...rest } = s;
+      void _s;
+      void _m;
+      return rest;
+    }),
+  }));
+}
+
 /** カット内の動き(ズーム・パン・揺れ) */
 function motionFields(bg: NonNullable<Scene['bg']>, set: (m: Motion) => void): HTMLElement {
   const m = motionOf(bg) ?? { type: 'none' as const, strength: 1 };
@@ -1050,7 +1098,12 @@ function speedSection(s: Scene): HTMLElement {
   const speed = s.speed ?? 1;
   const setSpeed = (v: number, all = false) => {
     const sp = Math.round(Math.max(0.5, Math.min(2, v)) * 100) / 100;
-    store.commit((p) => ({ ...p, scenes: p.scenes.map((sc) => (all || sc.id === s.id ? { ...sc, speed: sp === 1 ? undefined : sp } : sc)) }));
+    // 1カットだけ変えたら、緩急の自動設定で上書きしない。全カットそろえるときは緩急をやめる
+    store.commit((p) => ({
+      ...p,
+      ...(all && p.tempo ? { tempo: { ...p.tempo, mode: 'off' as const } } : {}),
+      scenes: p.scenes.map((sc) => (all || sc.id === s.id ? { ...sc, speed: sp === 1 ? undefined : sp, speedManual: !all } : sc)),
+    }));
   };
   const label = h('span', { class: 'slider-value' }, `${speed.toFixed(2)}倍`);
   const range = h('input', { type: 'range', min: 0.5, max: 2, step: 0.05, value: String(speed) });
