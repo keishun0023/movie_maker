@@ -996,7 +996,7 @@ function sceneInspector(s: Scene, player: Player): HTMLElement {
 
 /** 話す速さの緩急(カットごとに速い所・遅い所を作る) */
 function tempoSection(p: Project): HTMLElement {
-  const t = p.tempo ?? DEFAULT_TEMPO;
+  const t = { ...DEFAULT_TEMPO, ...(p.tempo ?? {}) };
   // つまみを動かしている間は右の欄を作り直さない(つまみが外れないように)
   const set = (patch: Partial<TempoSettings>, key?: string) =>
     store.commit((pp) => applyTempo({ ...pp, tempo: { ...(pp.tempo ?? DEFAULT_TEMPO), ...patch } }), key ? { coalesce: key, skip: 'right' } : {});
@@ -1020,9 +1020,156 @@ function tempoSection(p: Project): HTMLElement {
           null,
           slider2('いちばん速いカット', t.max, 1.1, 1.6, (v) => set({ max: Math.max(v, t.min) }, 'tempo-max')),
           slider2('いちばん遅いカット', t.min, 0.9, 1.2, (v) => set({ min: Math.min(v, t.max) }, 'tempo-min')),
+          field(
+            'カットの後の間(いちばん長い間)',
+            slider(t.pauseMaxMs ?? 0, { min: 0, max: 800, step: 50, format: (v) => (v ? `${(v / 1000).toFixed(2)}秒` : '使わない'), onChange: (v) => set({ pauseMaxMs: v }, 'tempo-pause') }),
+            '大事なカットや文の終わりの後に間を置き、話の途中は詰めます',
+          ),
           h('p', { class: 'hint' }, `いまの速さ: ${speeds.map((v) => v.toFixed(2)).join(' / ')}${manual ? `(手で変えた ${manual} カットはそのまま)` : ''}`),
           h('p', { class: 'hint' }, '目安: 速い所は 1.3〜1.4 倍まで(早回しの研究では 1.25〜1.5 倍程度までは聞き取り・理解がほとんど落ちないとされます)。カットごとの速さは「3 確認して修正」でも変えられます。'),
         )
+      : null,
+    p.scenes.length > 1 ? tempoGraph(p) : null,
+  );
+}
+
+/**
+ * 緩急の波: カットごとの速さ(点)と、カットの後の間(棒)。
+ * 点を上下にドラッグするとそのカットの速さ、棒をドラッグすると間を変えられる(手で決めた値は自動設定で上書きしない)。
+ */
+function tempoGraph(p: Project): HTMLElement {
+  const NS = 'http://www.w3.org/2000/svg';
+  const W = 600;
+  const H = 190;
+  const top = 14;
+  const plotH = 110; // 速さの部分
+  const barTop = top + plotH + 18; // 間の部分
+  const barH = 40;
+  const SP_LO = 0.8;
+  const SP_HI = 1.7;
+  const PZ_MAX = 1000;
+  const n = p.scenes.length;
+  const xOf = (i: number) => 24 + ((W - 48) * (n > 1 ? i / (n - 1) : 0.5));
+  const yOfSpeed = (v: number) => top + plotH * (1 - (v - SP_LO) / (SP_HI - SP_LO));
+  const barX = (i: number) => Math.min(W - 14, xOf(i) + (n > 1 ? (xOf(1) - xOf(0)) / 2 : 12)) - 5;
+  const speedOfY = (y: number) => Math.round((SP_LO + (1 - (y - top) / plotH) * (SP_HI - SP_LO)) * 20) / 20;
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.setAttribute('class', 'tempo-graph');
+  const el = (tag: string, attrs: Record<string, string | number>) => {
+    const e = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, String(v));
+    svg.appendChild(e);
+    return e;
+  };
+  // 目盛り(1.0倍・1.3倍)
+  for (const v of [1, 1.3, 1.6]) {
+    el('line', { x1: 20, x2: W - 10, y1: yOfSpeed(v), y2: yOfSpeed(v), class: v === 1 ? 'axis base' : 'axis' });
+    const t = el('text', { x: 2, y: yOfSpeed(v) + 4, class: 'axis-label' });
+    t.textContent = `${v}`;
+  }
+  const lbl = el('text', { x: 2, y: barTop + 10, class: 'axis-label' });
+  lbl.textContent = '間';
+  const speeds = p.scenes.map((s) => s.speed ?? 1);
+  const pauses = p.scenes.map((s) => s.pauseAfterMs ?? 0);
+  const path = el('polyline', { points: speeds.map((v, i) => `${xOf(i)},${yOfSpeed(v)}`).join(' '), class: 'tempo-line' });
+  const dots: SVGElement[] = [];
+  const bars: SVGElement[] = [];
+  const sel = store.state.ui.selection;
+  p.scenes.forEach((s, i) => {
+    // 間の棒(カットの後ろ側に描く)
+    const bx = barX(i);
+    const bh = (barH * Math.min(PZ_MAX, pauses[i]!)) / PZ_MAX;
+    const bar = el('rect', { x: bx, y: barTop + barH - bh, width: 10, height: Math.max(2, bh), class: 'tempo-bar' + (s.pauseManual ? ' manual' : '') });
+    bars.push(bar);
+    const dot = el('circle', { cx: xOf(i), cy: yOfSpeed(speeds[i]!), r: 7, class: 'tempo-dot' + (s.speedManual ? ' manual' : '') + (sel?.kind === 'scene' && sel.id === s.id ? ' selected' : '') });
+    dots.push(dot);
+  });
+  const readout = h('div', { class: 'hint' }, 'カットを選ぶと速さ・間が表示されます。');
+  const show = (i: number) => {
+    readout.textContent = `#${i + 1}: 速さ ${speeds[i]!.toFixed(2)}倍・後の間 ${(pauses[i]! / 1000).toFixed(2)}秒${p.scenes[i]!.speedManual || p.scenes[i]!.pauseManual ? '(手で調整)' : ''}`;
+  };
+  // ドラッグ
+  const toSvg = (e: PointerEvent) => {
+    const r = svg.getBoundingClientRect();
+    return { x: ((e.clientX - r.left) / r.width) * W, y: ((e.clientY - r.top) / r.height) * H };
+  };
+  let drag: { kind: 'speed' | 'pause'; i: number } | null = null;
+  svg.addEventListener('pointerdown', (e) => {
+    const pt = toSvg(e);
+    let best = -1;
+    let bestD = 1e9;
+    for (let i = 0; i < n; i++) {
+      const d = Math.abs(pt.x - xOf(i));
+      if (d < bestD) {
+        bestD = d;
+        best = i;
+      }
+    }
+    if (best < 0) return;
+    const kind = pt.y > barTop - 8 ? 'pause' : 'speed';
+    let i = best;
+    if (kind === 'pause') {
+      // 棒は点と次の点の間にある
+      let bd = 1e9;
+      for (let k = 0; k < n; k++) {
+        const d = Math.abs(pt.x - barX(k) - 5);
+        if (d < bd) {
+          bd = d;
+          i = k;
+        }
+      }
+    }
+    drag = { kind, i };
+    svg.setPointerCapture(e.pointerId);
+    show(i);
+    e.preventDefault();
+  });
+  svg.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    const pt = toSvg(e);
+    const i = drag.i;
+    if (drag.kind === 'speed') {
+      speeds[i] = Math.max(0.8, Math.min(1.6, speedOfY(pt.y)));
+      dots[i]!.setAttribute('cy', String(yOfSpeed(speeds[i]!)));
+      path.setAttribute('points', speeds.map((v, k) => `${xOf(k)},${yOfSpeed(v)}`).join(' '));
+    } else {
+      pauses[i] = Math.round((Math.max(0, Math.min(1, (barTop + barH - pt.y) / barH)) * PZ_MAX) / 50) * 50;
+      const bh = (barH * pauses[i]!) / PZ_MAX;
+      bars[i]!.setAttribute('y', String(barTop + barH - bh));
+      bars[i]!.setAttribute('height', String(Math.max(2, bh)));
+    }
+    show(i);
+  });
+  const finish = () => {
+    if (!drag) return;
+    const { kind, i } = drag;
+    drag = null;
+    const id = p.scenes[i]!.id;
+    // 選択の切り替えはドラッグの後に(途中で画面を作り直すとドラッグが切れる)
+    store.state.ui.selection = { kind: 'scene', id };
+    store.commit((pp) => ({
+      ...pp,
+      scenes: pp.scenes.map((sc) => {
+        if (sc.id !== id) return sc;
+        if (kind === 'speed') return { ...sc, speed: speeds[i] === 1 ? undefined : speeds[i], speedManual: true };
+        return { ...sc, pauseAfterMs: pauses[i] || undefined, pauseManual: true };
+      }),
+    }));
+  };
+  svg.addEventListener('pointerup', finish);
+  svg.addEventListener('pointercancel', finish);
+  const manualN = p.scenes.filter((s) => s.speedManual || s.pauseManual).length;
+  return h(
+    'div',
+    { class: 'tempo-graph-box' },
+    svg,
+    readout,
+    h('p', { class: 'hint' }, '点を上下にドラッグするとそのカットの速さ、下の棒をドラッグするとカットの後の間を変えられます(手で変えた所は白く表示し、自動の緩急で上書きしません)。'),
+    manualN
+      ? button(`手で変えた所を自動に戻す (${manualN})`, () =>
+          store.commit((pp) => applyTempo({ ...pp, scenes: pp.scenes.map((s) => ({ ...s, speedManual: undefined, pauseManual: undefined })) })),
+        { class: 'small' })
       : null,
   );
 }
@@ -1036,6 +1183,8 @@ function resetTempo() {
       const { speed: _s, speedManual: _m, ...rest } = s;
       void _s;
       void _m;
+      // 自動で入れた間も消す(手で決めた間は残す)
+      if (!rest.pauseManual) delete rest.pauseAfterMs;
       return rest;
     }),
   }));
@@ -1117,7 +1266,7 @@ function pauseSection(s: Scene, player: Player): HTMLElement {
   const ms = s.pauseAfterMs ?? 0;
   const setPause = (v: number) => {
     const n = Math.round(Math.max(0, Math.min(3000, v)) / 50) * 50;
-    store.commit((p) => ({ ...p, scenes: p.scenes.map((sc) => (sc.id === s.id ? { ...sc, pauseAfterMs: n || undefined } : sc)) }));
+    store.commit((p) => ({ ...p, scenes: p.scenes.map((sc) => (sc.id === s.id ? { ...sc, pauseAfterMs: n || undefined, pauseManual: true } : sc)) }));
   };
   const label = h('span', { class: 'slider-value' }, `${(ms / 1000).toFixed(2)}秒`);
   const range = h('input', { type: 'range', min: 0, max: 2000, step: 50, value: String(ms) });

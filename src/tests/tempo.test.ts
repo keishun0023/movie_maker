@@ -27,3 +27,15 @@ test('緩急(波・ときどき速く): 速い所と遅い所が交互に来る�
   assert.equal(p.filter((x) => x === 1.3).length, 4);
   assert.deepEqual(tempoSpeeds(many, many.map(() => 1.5), { mode: 'off', max: 1.3, min: 1.0 }), many.map(() => 1));
 });
+
+test('緩急の間: ゆっくりのカット・文の終わりの後に間を置き、話の途中と最後には置かない', async () => {
+  const { tempoPauses } = await import('../shared/tempo.js');
+  const t = ['今まで何やっても', 'くすみ消えなかった', 'これ最強です！', '今すぐチェック'];
+  const sp = [1.3, 1.2, 1.0, 1.0];
+  const ps = tempoPauses(t, sp, { mode: 'script', max: 1.3, min: 1.0, pauseMaxMs: 400 });
+  assert.equal(ps[0], 0); // 話の途中
+  assert.ok(ps[2]! >= 300, ps.join(',')); // ゆっくり・文の終わり
+  assert.equal(ps[3], 0); // 最後
+  assert.ok(ps.every((x) => x <= 400 && x % 50 === 0));
+  assert.deepEqual(tempoPauses(t, sp, { mode: 'script', max: 1.3, min: 1.0, pauseMaxMs: 0 }), [0, 0, 0, 0]);
+});

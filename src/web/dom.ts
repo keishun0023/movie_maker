@@ -92,7 +92,9 @@ export function numInput(value: number, opts: { min?: number; max?: number; step
 
 export function slider(value: number, opts: { min: number; max: number; step?: number; onChange: (v: number) => void; format?: (v: number) => string }): HTMLElement {
   const out = h('span', { class: 'slider-value' }, opts.format ? opts.format(value) : String(value));
-  const el = h('input', { type: 'range', value: String(value), min: opts.min, max: opts.max, step: opts.step ?? 1 });
+  const el = h('input', { type: 'range', min: opts.min, max: opts.max, step: opts.step ?? 1 });
+  // 範囲と刻みを決めてから値を入れる(先に入れると、初期の刻み 1 に丸められてしまう)
+  el.value = String(value);
   el.addEventListener('input', () => {
     const v = Number(el.value);
     out.textContent = opts.format ? opts.format(v) : String(v);

@@ -1,6 +1,6 @@
 // プロジェクトの初期値と、解析結果からカット・テロップ・シーンを組み立てる処理。
 import { applyTextFixes } from './script.js';
-import { tempoSpeeds } from './tempo.js';
+import { DEFAULT_TEMPO, tempoPauses, tempoSpeeds } from './tempo.js';
 import { alignCutsToReference, parseReferenceTable, splitByReference, type ReferenceSplit } from './reference.js';
 import {
   SCHEMA_VERSION,
@@ -221,17 +221,30 @@ export function sceneTextsOf(p: Project): string[] {
 
 /** 話す速さの緩急を、各カットの速さに当てはめる(手で速さを決めたカットはそのまま) */
 export function applyTempo(p: Project): Project {
-  const t = p.tempo;
-  if (!t || t.mode === 'off' || p.capcut || p.scenes.length === 0) return p;
-  const speeds = tempoSpeeds(sceneTextsOf(p), p.scenes.map((s) => (s.srcEnd - s.srcStart) / SR), t);
+  if (!p.tempo || p.tempo.mode === 'off' || p.capcut || p.scenes.length === 0) return p;
+  const t = { ...DEFAULT_TEMPO, ...p.tempo };
+  const texts = sceneTextsOf(p);
+  const speeds = tempoSpeeds(texts, p.scenes.map((s) => (s.srcEnd - s.srcStart) / SR), t);
+  // 手で決めた速さはそのまま使って、間を決める
+  const actual = p.scenes.map((s, i) => (s.speedManual ? s.speed ?? 1 : speeds[i] ?? 1));
+  const pauses = tempoPauses(texts, actual, t);
   return {
     ...p,
     scenes: p.scenes.map((s, i) => {
-      if (s.speedManual) return s;
-      const v = speeds[i] ?? 1;
-      const { speed: _old, ...rest } = s;
-      void _old;
-      return v === 1 ? rest : { ...rest, speed: v };
+      let next = s;
+      if (!s.speedManual) {
+        const v = speeds[i] ?? 1;
+        const { speed: _old, ...rest } = next;
+        void _old;
+        next = v === 1 ? rest : { ...rest, speed: v };
+      }
+      if (!s.pauseManual) {
+        const ms = pauses[i] ?? 0;
+        const { pauseAfterMs: _p, ...rest } = next;
+        void _p;
+        next = ms > 0 ? { ...rest, pauseAfterMs: ms } : rest;
+      }
+      return next;
     }),
   };
 }

@@ -11,9 +11,36 @@ export interface TempoSettings {
   max: number;
   /** いちばん遅いカットの速さ(0.9〜1.2) */
   min: number;
+  /** カットの後の間(無音)でも緩急をつける。いちばん長い間(ミリ秒。0 なら使わない) */
+  pauseMaxMs?: number;
 }
 
-export const DEFAULT_TEMPO: TempoSettings = { mode: 'off', max: 1.3, min: 1.0 };
+export const DEFAULT_TEMPO: TempoSettings = { mode: 'off', max: 1.3, min: 1.0, pauseMaxMs: 300 };
+
+const SENTENCE_END = /[。．！？!?]$|(です|ます|でした|ました|だった|した|よね|だよ|よ|ね|な)$/;
+
+/**
+ * カットの後の間(ミリ秒)。ゆっくり読ませるカット(大事な所)と文の終わりの後に間を置き、
+ * 速いカットや話の途中(つなぎ)の後は詰める。最後のカットの後には置かない。
+ */
+export function tempoPauses(texts: string[], speeds: number[], s: TempoSettings): number[] {
+  const maxMs = Math.max(0, s.pauseMaxMs ?? 0);
+  const n = texts.length;
+  if (s.mode === 'off' || maxMs === 0 || n === 0) return texts.map(() => 0);
+  const max = Math.max(s.min, s.max);
+  const min = Math.min(s.min, s.max);
+  const span = Math.max(0.01, max - min);
+  return texts.map((t, i) => {
+    if (i === n - 1) return 0;
+    const text = t.replace(/\s+/g, '');
+    if (CONNECTIVE_END.test(text)) return 0; // 話の途中
+    const slow = (max - (speeds[i] ?? max)) / span; // 0(速い)〜1(遅い)
+    let v = slow * 0.7;
+    if (SENTENCE_END.test(text)) v += 0.4;
+    if (v < 0.35) return 0;
+    return Math.round((Math.min(1, v) * maxMs) / 50) * 50;
+  });
+}
 
 const NUMBER = /[0-9０-９一二三四五六七八九十百千万億]+(%|％|倍|円|個|種|日|年|回|位|時間|分|秒|kg|g|mg|ml)|[0-9０-９]/;
 const CTA = /(チェック|今すぐ|いますぐ|リンク|プロフ|見てみて|試してみて|ぜひ|限定|無料|最強|絶対|おすすめ|オススメ|必見|保存|フォロー|コメント|使ってみて|買って)/;

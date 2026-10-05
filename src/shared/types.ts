@@ -281,6 +281,8 @@ export interface Scene {
   pitch?: number;
   /** このカットの後に足す間(ミリ秒)。テンポよく詰めた後でも、ここだけ間を空けたいとき */
   pauseAfterMs?: number;
+  /** 間を手で決めた(「緩急」の自動設定で上書きしない) */
+  pauseManual?: boolean;
   /** AI が素材を提案したときの理由(表示用) */
   aiNote?: string;
   /** AI が挙げたほかの候補(「別の候補にする」で順に切り替える) */

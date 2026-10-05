@@ -220,3 +220,14 @@ a { color: var(--accent); }
 .section-title { font-weight: 600; margin: 4px 0; }
 .capcut-media { max-height: 240px; overflow: auto; display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
 .capcut-media label { font-size: 12px; align-items: center; }
+.tempo-graph-box { margin: 8px 0; }
+.tempo-graph { width: 100%; height: auto; background: #12161c; border: 1px solid #2a313b; border-radius: 8px; touch-action: none; cursor: ns-resize; user-select: none; }
+.tempo-graph .axis { stroke: #2a313b; stroke-width: 1; }
+.tempo-graph .axis.base { stroke: #4a5361; stroke-dasharray: 4 4; }
+.tempo-graph .axis-label { fill: #7d8796; font-size: 10px; }
+.tempo-graph .tempo-line { fill: none; stroke: #4da3ff; stroke-width: 2; }
+.tempo-graph .tempo-dot { fill: #4da3ff; stroke: #12161c; stroke-width: 2; }
+.tempo-graph .tempo-dot.manual { fill: #fff; }
+.tempo-graph .tempo-dot.selected { stroke: #ffd24d; stroke-width: 3; }
+.tempo-graph .tempo-bar { fill: #3d8f6f; }
+.tempo-graph .tempo-bar.manual { fill: #fff; }
