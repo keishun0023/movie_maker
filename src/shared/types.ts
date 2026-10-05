@@ -147,6 +147,10 @@ export interface KeepSegment {
   speed?: number;
   /** 足した間(無音)。元音声は使わない(srcStart = srcEnd) */
   gap?: boolean;
+  /** 声の大きさの調整(dB) */
+  gainDb?: number;
+  /** 声の高さの調整(半音)。速さは変えずに高さだけ変える */
+  pitch?: number;
 }
 
 /** 元音声の位置 at の後に足す間(無音) */
@@ -161,6 +165,10 @@ export interface SpeedRange {
   start: number;
   end: number;
   speed: number;
+  /** 声の大きさの調整(dB) */
+  gainDb?: number;
+  /** 声の高さの調整(半音) */
+  pitch?: number;
 }
 
 export interface Timeline {
@@ -267,6 +275,10 @@ export interface Scene {
   speed?: number;
   /** 速さを手で決めた(「緩急」の自動設定で上書きしない) */
   speedManual?: boolean;
+  /** このカットの声の大きさ(dB。+で大きく) */
+  gainDb?: number;
+  /** このカットの声の高さ(半音。+で高く。速さは変わらない) */
+  pitch?: number;
   /** このカットの後に足す間(ミリ秒)。テンポよく詰めた後でも、ここだけ間を空けたいとき */
   pauseAfterMs?: number;
   /** AI が素材を提案したときの理由(表示用) */

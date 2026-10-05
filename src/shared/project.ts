@@ -106,7 +106,9 @@ export function recomputeCut(p: Project, a: AnalysisData): Project {
 
 /** シーンの「話す速さ」から、元音声の範囲ごとの速さを作る */
 export function speedRangesOf(scenes: Scene[]): SpeedRange[] {
-  return scenes.filter((s) => clampSpeed(s.speed) !== 1).map((s) => ({ start: s.srcStart, end: s.srcEnd, speed: clampSpeed(s.speed) }));
+  return scenes
+    .filter((s) => clampSpeed(s.speed) !== 1 || s.gainDb || s.pitch)
+    .map((s) => ({ start: s.srcStart, end: s.srcEnd, speed: clampSpeed(s.speed), ...(s.gainDb ? { gainDb: s.gainDb } : {}), ...(s.pitch ? { pitch: s.pitch } : {}) }));
 }
 
 /** カットごとに「後に足す間」から、足す位置と長さを作る */

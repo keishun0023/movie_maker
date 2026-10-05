@@ -943,6 +943,7 @@ function sceneInspector(s: Scene, player: Player): HTMLElement {
       button('次と結合', () => mergeScene(s.id, 1), { disabled: idx === p.scenes.length - 1 }),
     ),
     p.capcut ? null : speedSection(s),
+    p.capcut ? null : voiceSection(s, player),
     p.capcut ? null : pauseSection(s, player),
     section(
       '背景',
@@ -1062,6 +1063,52 @@ function motionSection(p: Project): HTMLElement {
     h('div', { class: 'row gap wrap' }, button('全カットにおまかせで動きを付ける', () => applyAutoMotions(), { class: 'primary' }), button('動きをすべて外す', () => clearMotions())),
     checkbox(p.motionAuto !== false, 'Claude で素材を割り当てたら、動きも自動で付ける', (v) => store.commit((pp) => ({ ...pp, motionAuto: v }))),
     h('p', { class: 'hint' }, 'カットごとの動きは「3 確認して修正」でカットを選ぶと変えられます。'),
+  );
+}
+
+/** このカットの声の大きさ・高さ(特定のカットだけ張り上げる・抑えるなど) */
+function voiceSection(s: Scene, player: Player): HTMLElement {
+  const gain = s.gainDb ?? 0;
+  const pitch = s.pitch ?? 0;
+  const setVoice = (g: number, pt: number) =>
+    store.commit((p) => ({
+      ...p,
+      scenes: p.scenes.map((sc) => {
+        if (sc.id !== s.id) return sc;
+        const { gainDb: _g, pitch: _p, ...rest } = sc;
+        void _g;
+        void _p;
+        return { ...rest, ...(g ? { gainDb: g } : {}), ...(pt ? { pitch: pt } : {}) };
+      }),
+    }));
+  // 音声の作り直しが重いので、つまみを離したときに確定する
+  const range = (value: number, min: number, max: number, fmt: (v: number) => string, onDone: (v: number) => void) => {
+    const label = h('span', { class: 'slider-value' }, fmt(value));
+    const el = h('input', { type: 'range', min, max, step: 0.5, value: String(value) });
+    el.addEventListener('input', () => (label.textContent = fmt(Number(el.value))));
+    el.addEventListener('change', () => onDone(Number(el.value)));
+    return h('div', { class: 'slider' }, el, label);
+  };
+  const presets: [string, number, number][] = [
+    ['ふつう', 0, 0],
+    ['強調(少し大きく・高く)', 4, 1],
+    ['張り上げる(大きく・高く)', 7, 2],
+    ['小さく・低く', -6, -1],
+  ];
+  const tl = timelineOf(store.p);
+  const idx = store.p.scenes.findIndex((x) => x.id === s.id);
+  const r = tl ? sceneOutputRanges(store.p.scenes, tl)[idx] : null;
+  return section(
+    'このカットの声',
+    h(
+      'div',
+      { class: 'seg-buttons' },
+      presets.map(([label, g, pt]) => h('button', { type: 'button', class: gain === g && pitch === pt ? 'on' : '', onclick: () => setVoice(g, pt) }, label)),
+    ),
+    field('大きさ', range(gain, -12, 9, (v) => `${v > 0 ? '+' : ''}${v}dB`, (v) => setVoice(v, pitch))),
+    field('高さ', range(pitch, -4, 4, (v) => `${v > 0 ? '+' : ''}${v}半音`, (v) => setVoice(gain, v))),
+    r ? button('▶ このカットを聞く', () => void player.play(Math.max(0, r.outStart - 0.5 * SR), Math.min(tl!.outSamples, r.outEnd + 0.5 * SR)), { class: 'small' }) : null,
+    h('p', { class: 'hint' }, 'このカットだけ声を大きく・高くして、張り上げるような抑揚をつけられます(速さは変わりません)。大きくしすぎて音が割れないよう、上限の近くはやわらかく抑えます。'),
   );
 }
 

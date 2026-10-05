@@ -380,17 +380,28 @@ export function renderEdited(source: Pcm16, tl: Timeline, gainDb = 0, padToSampl
     const b = Math.max(a, Math.min(srcFrames, seg.srcEnd + Math.round(hR * speed) + eR));
     const want = outLen(i) + hL + hR + eL + eR;
     const raw = source.data.subarray(a * ch, b * ch);
-    const piece = speed !== 1 || raw.length / ch !== want ? (speed !== 1 ? timeStretch(raw, ch, want) : raw) : raw;
+    // 声の高さ: いったん長さを (高さの比) 倍に伸ばしてから、元の長さに詰める(速さは変えずに高さだけ変わる)
+    const pitchRatio = seg.pitch ? Math.pow(2, seg.pitch / 12) : 1;
+    const piece =
+      pitchRatio !== 1
+        ? resampleTo(timeStretch(raw, ch, Math.max(1, Math.round(want * pitchRatio))), ch, want)
+        : speed !== 1 || raw.length / ch !== want
+          ? speed !== 1
+            ? timeStretch(raw, ch, want)
+            : raw
+          : raw;
     const len = Math.min(want, piece.length / ch);
     const o0 = seg.outStart - hL - eL;
     const f = Math.min(fade, Math.floor(len / 2));
     // 間へ延ばした所は、長めにフェードして消す(入る)
     const fIn = eL > 0 ? Math.min(eL, Math.round(0.03 * sr)) : f;
     const fOut = eR > 0 ? Math.min(eR, Math.round(0.08 * sr)) : f;
+    // このカットの声の大きさ
+    const segGain = seg.gainDb ? Math.pow(10, seg.gainDb / 20) : 1;
     for (let k = 0; k < len; k++) {
       const oi = o0 + k;
       if (oi < 0 || oi >= total) continue;
-      let g = gain;
+      let g = gain * segGain;
       if (hL > 0 && k < 2 * hL) g *= Math.sin(((k + 0.5) / (2 * hL)) * (Math.PI / 2));
       else if (hL === 0 && cutBefore && fIn > 0 && k < fIn) g *= k / fIn;
       const fromEnd = len - 1 - k;
@@ -400,11 +411,31 @@ export function renderEdited(source: Pcm16, tl: Timeline, gainDb = 0, padToSampl
     }
   });
   const out = new Int16Array(total * ch);
+  // 大きくしたカットで音が割れないよう、上限の近くはやわらかく抑える
+  const knee = 26000;
   for (let i = 0; i < out.length; i++) {
-    const v = acc[i]!;
+    let v = acc[i]!;
+    const av = Math.abs(v);
+    if (av > knee) v = Math.sign(v) * (knee + (32767 - knee) * Math.tanh((av - knee) / (32767 - knee)));
     out[i] = v > 32767 ? 32767 : v < -32768 ? -32768 : Math.round(v);
   }
   return { sampleRate: source.sampleRate, channels: ch, data: out };
+}
+
+/** 長さを変える(単純な補間。声の高さを変えるのに使う) */
+function resampleTo(input: Int16Array, ch: number, outFrames: number): Int16Array {
+  const inFrames = input.length / ch;
+  const out = new Int16Array(outFrames * ch);
+  if (inFrames === 0) return out;
+  const step = inFrames / outFrames;
+  for (let i = 0; i < outFrames; i++) {
+    const x = i * step;
+    const i0 = Math.min(inFrames - 1, Math.floor(x));
+    const i1 = Math.min(inFrames - 1, i0 + 1);
+    const fr = x - i0;
+    for (let c = 0; c < ch; c++) out[i * ch + c] = Math.round(input[i0 * ch + c]! * (1 - fr) + input[i1 * ch + c]! * fr);
+  }
+  return out;
 }
 
 const pcmCache = new Map<string, { at: number; pcm: Pcm16 }>();

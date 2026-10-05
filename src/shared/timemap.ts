@@ -33,9 +33,18 @@ export function clampSpeed(v: number | undefined): number {
 /** 速さ設定を比較用の文字列にする(1倍の範囲は含めない) */
 export function speedKeyOf(speeds: SpeedRange[]): string {
   return speeds
-    .filter((r) => clampSpeed(r.speed) !== 1 && r.end > r.start)
-    .map((r) => `${Math.round(r.start)}-${Math.round(r.end)}@${clampSpeed(r.speed)}`)
+    .filter((r) => (clampSpeed(r.speed) !== 1 || voiceOf(r).gainDb || voiceOf(r).pitch) && r.end > r.start)
+    .map((r) => {
+      const v = voiceOf(r);
+      return `${Math.round(r.start)}-${Math.round(r.end)}@${clampSpeed(r.speed)}${v.gainDb ? `v${v.gainDb}` : ''}${v.pitch ? `p${v.pitch}` : ''}`;
+    })
     .join(',');
+}
+
+/** 声の大きさ(-24〜+12dB)・高さ(-6〜+6半音)をそろえる(0.5 刻み) */
+export function voiceOf(r: { gainDb?: number; pitch?: number }): { gainDb: number; pitch: number } {
+  const q = (v: number | undefined, lo: number, hi: number) => (v && isFinite(v) ? Math.round(Math.max(lo, Math.min(hi, v)) * 2) / 2 : 0);
+  return { gainDb: q(r.gainDb, -24, 12), pitch: q(r.pitch, -6, 6) };
 }
 
 /** 足す間を比較用の文字列にする */
@@ -52,10 +61,11 @@ export function buildTimeline(srcSamples: number, removeRanges: Range[], fadeMs 
   const total = Math.max(0, Math.round(srcSamples));
   const removes = normalizeRanges(removeRanges, 0, total);
   const sp = speeds
-    .map((r) => ({ start: Math.max(0, Math.round(r.start)), end: Math.min(total, Math.round(r.end)), speed: clampSpeed(r.speed) }))
-    .filter((r) => r.end > r.start && r.speed !== 1)
+    .map((r) => ({ start: Math.max(0, Math.round(r.start)), end: Math.min(total, Math.round(r.end)), speed: clampSpeed(r.speed), ...voiceOf(r) }))
+    .filter((r) => r.end > r.start && (r.speed !== 1 || r.gainDb !== 0 || r.pitch !== 0))
     .sort((a, b) => a.start - b.start);
-  const speedAt = (x: number) => sp.find((r) => x >= r.start && x < r.end)?.speed ?? 1;
+  const rangeAt = (x: number) => sp.find((r) => x >= r.start && x < r.end);
+  const speedAt = (x: number) => rangeAt(x)?.speed ?? 1;
   const cuts = new Set<number>();
   for (const r of sp) {
     cuts.add(r.start);
@@ -104,6 +114,9 @@ export function buildTimeline(srcSamples: number, removeRanges: Range[], fadeMs 
     const len = speed === 1 ? b - a : Math.max(1, Math.round((b - a) / speed));
     const seg: KeepSegment = { srcStart: a, srcEnd: b, outStart: out, outEnd: out + len };
     if (speed !== 1) seg.speed = speed;
+    const rv = rangeAt(a);
+    if (rv?.gainDb) seg.gainDb = rv.gainDb;
+    if (rv?.pitch) seg.pitch = rv.pitch;
     segments.push(seg);
     out += len;
     pushGap(b);
@@ -245,6 +258,8 @@ export function hashSegments(segments: KeepSegment[], fadeMs: number, xfadeMs = 
     feed(s.srcStart);
     feed(s.srcEnd);
     if (s.gap) feed(-(s.outEnd - s.outStart));
+    if (s.gainDb) feed(1e9 + Math.round(s.gainDb * 10));
+    if (s.pitch) feed(2e9 + Math.round(s.pitch * 10));
     if (s.speed) feed(Math.round(s.speed * 1000));
   }
   return h1.toString(16).padStart(8, '0') + h2.toString(16).padStart(8, '0');
