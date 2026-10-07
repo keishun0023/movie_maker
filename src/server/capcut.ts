@@ -208,17 +208,18 @@ class DraftBuilder {
   async importFile(src: string, kind: 'video' | 'photo' | 'music', name: string, durationUs: number, w: number, h: number, copy = true): Promise<{ file: string; localId: string }> {
     const known = this.localIds.get(src);
     if (known) return { file: this.files.get(src)!, localId: known };
-    let dst = src;
-    // 素材ライブラリのファイルはコピーせず、そのまま参照する(容量を食わない)。一時的に作ったファイルだけ下書きにコピーする
-    if (copy) {
-      const sub = kind === 'music' ? 'audio' : kind === 'photo' ? 'image' : 'video';
-      const dstDir = path.join(this.dir, 'assets', sub);
-      await fsp.mkdir(dstDir, { recursive: true });
-      const safe = name.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_') || 'media';
-      dst = path.join(dstDir, safe);
-      for (let i = 2; fs.existsSync(dst); i++) dst = path.join(dstDir, `${path.parse(safe).name}-${i}${path.extname(safe)}`);
-      await fsp.copyFile(src, dst);
-    }
+    // CapCut は下書きフォルダの外のファイルを読めないことがある(「メディアがリンクされていません」になる)ため、
+    // 素材は必ず下書きの中に置く。Mac(APFS)ではクローン(中身を共有するコピー)にするので、容量はほとんど増えない
+    void copy;
+    const sub = kind === 'music' ? 'audio' : kind === 'photo' ? 'image' : 'video';
+    const dstDir = path.join(this.dir, 'assets', sub);
+    await fsp.mkdir(dstDir, { recursive: true });
+    // 拡張子は実際のファイルに合わせる(向きをそろえた PNG を元の名前 .jpg で置くと読めないことがある)
+    const base = path.parse(name.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_')).name || 'media';
+    const safe = base + (path.extname(src) || path.extname(name));
+    let dst = path.join(dstDir, safe);
+    for (let i = 2; fs.existsSync(dst); i++) dst = path.join(dstDir, `${base}-${i}${path.extname(safe)}`);
+    await fsp.copyFile(src, dst, fs.constants.COPYFILE_FICLONE);
     this.files.set(src, dst);
     const localId = uuid();
     this.localIds.set(src, localId);

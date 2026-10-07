@@ -54,7 +54,7 @@ test('素材ライブラリ: 元の場所のファイルをコピーせずに加
   assert.throws(() => sub('p20261002-anyproj', png));
 });
 
-test('CapCut の素材の一覧と、CapCut への書き出しでライブラリの素材をコピーしない', async () => {
+test('CapCut の素材の一覧と、CapCut への書き出しで素材を下書きの中に置く', async () => {
   const drafts = path.join(work, 'drafts');
   const d1 = path.join(drafts, 'P1');
   fs.mkdirSync(d1, { recursive: true });
@@ -80,7 +80,8 @@ test('CapCut の素材の一覧と、CapCut への書き出しでライブラリ
   const r = await exportCapcut(p, drafts, ctx);
   const out = JSON.parse(fs.readFileSync(path.join(r.draftDir, 'draft_info.json'), 'utf8'));
   const photo = out.materials.videos.find((m: { type: string }) => m.type === 'photo');
-  // 画像はライブラリの(向きをそろえた)ファイルをそのまま参照し、下書きにはコピーしない
-  assert.ok(photo.path.startsWith(path.join(dataDir, 'library')), photo.path);
-  assert.ok(!fs.existsSync(path.join(r.draftDir, 'assets', 'image')));
+  // CapCut が読めるよう、素材は下書きの中に置く(Mac ではクローンなので容量はほとんど増えない)。拡張子は実際の形式(PNG)
+  assert.ok(photo.path.startsWith(r.draftDir + path.sep), photo.path);
+  assert.ok(fs.existsSync(photo.path));
+  assert.equal(path.extname(photo.path), '.png');
 });
