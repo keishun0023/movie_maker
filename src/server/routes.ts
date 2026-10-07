@@ -696,7 +696,7 @@ router.get('/api/capcut', (req, res) => {
 
 router.post('/api/projects/:id/capcut', async (req, res) => {
   const id = assertId(req.params.id!);
-  const body = await readJson<{ project: Project; captions?: { outStart: number; outEnd: number; png: string; x: number; y: number; w: number; h: number }[] }>(req, 200 * 1024 * 1024);
+  const body = await readJson<{ project: Project; captions?: { outStart: number; outEnd: number; png: string; x: number; y: number; w: number; h: number }[]; textLines?: Record<string, string[]> }>(req, 200 * 1024 * 1024);
   const project = body.project;
   // テロップを画像で入れるときは、画面で描いたテロップ画像を受け取る
   const workDir = sub(id, 'work', `capcut-${crypto.randomBytes(5).toString('hex')}`);
@@ -722,7 +722,7 @@ router.post('/api/projects/:id/capcut', async (req, res) => {
     projectId: id,
     queue: 'export',
     // CapCut から読み込んだプロジェクトは、元の下書きに素材を加えた複製を作る
-    runner: (ctx) => (project.capcut ? exportCapcutInto(project, dir, ctx) : exportCapcut(project, dir, ctx, capImages)),
+    runner: (ctx) => (project.capcut ? exportCapcutInto(project, dir, ctx) : exportCapcut(project, dir, ctx, capImages, body.textLines ?? {})),
     cleanup: cleanupDir(workDir),
   });
   sendJson(res, 200, job);

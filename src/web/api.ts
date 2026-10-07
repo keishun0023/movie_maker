@@ -112,8 +112,8 @@ export const api = {
   capcutTtsImport: (projectId: string, draftDir: string) => call<JobInfo>('POST', `/api/projects/${projectId}/capcut-tts-import`, { draftDir }),
   capcutImport: (projectId: string, draftDir: string) => call<JobInfo>('POST', `/api/projects/${projectId}/capcut-import`, { draftDir }),
   capcutInfo: (dir?: string) => call<{ dir: string; defaultDir: string; exists: boolean; projects: number; version: string | null }>('GET', '/api/capcut' + (dir ? `?dir=${encodeURIComponent(dir)}` : '')),
-  startCapcut: (projectId: string, project: Project, captions: { outStart: number; outEnd: number; png: string; x: number; y: number; w: number; h: number }[] = []) =>
-    call<JobInfo>('POST', `/api/projects/${projectId}/capcut`, { project, captions }),
+  startCapcut: (projectId: string, project: Project, captions: { outStart: number; outEnd: number; png: string; x: number; y: number; w: number; h: number }[] = [], textLines: Record<string, string[]> = {}) =>
+    call<JobInfo>('POST', `/api/projects/${projectId}/capcut`, { project, captions, textLines }),
   exports: (projectId: string) => call<{ name: string; size: number; mtime: string }[]>('GET', `/api/projects/${projectId}/exports`),
   reveal: (projectId: string) => call<{ path: string }>('POST', `/api/projects/${projectId}/reveal`, {}),
   jobs: (projectId?: string) => call<JobInfo[]>('GET', '/api/jobs' + (projectId ? `?projectId=${projectId}` : '')),

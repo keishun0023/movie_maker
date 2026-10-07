@@ -331,8 +331,8 @@ function rgb01(c: string): [number, number, number] {
 
 /** テロップ1つ分の文字素材。大きさ・縁取りの数値は CapCut の画面上の見た目に近づけた目安 */
 function textMaterial(text: string, st: CaptionStyle, W: number, fontPath = ''): Json {
-  // CapCut の文字サイズ 1 は 1080 幅の画面でおよそ 3.4px(実測に基づく目安。ずれたら CapCut でまとめて調整)
-  const size = Math.round(((st.size * (1080 / W)) / 3.4) * 10) / 10;
+  // CapCut の文字サイズ 1 は 1080 幅の画面でおよそ 6.4px(CapCut 8.3 の画面での実測。サイズ 76 の文字が 143px で表示された)
+  const size = Math.round(((st.size * (1080 / W)) / 6.4) * 10) / 10;
   const style: Json = {
     bold: st.weight >= 600,
     fill: { alpha: 1, content: { render_type: 'solid', solid: { alpha: 1, color: rgb01(st.color) } } },
@@ -706,7 +706,7 @@ export function canvasRatio(W: number, H: number): string {
   return hit ? hit[0] : 'original';
 }
 
-export async function exportCapcut(p: Project, draftsDir: string, ctx: JobContext, capImages: CapcutCaptionImage[] = []): Promise<CapcutResult> {
+export async function exportCapcut(p: Project, draftsDir: string, ctx: JobContext, capImages: CapcutCaptionImage[] = [], textLines: Record<string, string[]> = {}): Promise<CapcutResult> {
   const notes: string[] = [];
   const tl = timelineOf(p);
   if (!p.narration || !tl) throw new Error('ナレーション音声を設定してください。');
@@ -882,7 +882,10 @@ export async function exportCapcut(p: Project, draftsDir: string, ctx: JobContex
           }
           fontFiles.set(st.fontId, fontPath);
         }
-        const mat = textMaterial(c.text.trim(), st, W, fontPath);
+        // 改行はこのアプリで折り返した位置に合わせる(CapCut の自動の折り返しは効かないことがある)
+        const lines = textLines[c.id];
+        const text = lines?.length ? lines.join('\n') : c.text.trim();
+        const mat = textMaterial(text, st, W, fontPath);
         b.add('texts', mat);
         const seg = segment(mat.id as string, us(f0), us(f1) - us(f0), null, { extra_material_refs: b.companions('text'), render_index: 14000 });
         seg.clip = { alpha: 1, flip: { horizontal: false, vertical: false }, rotation: 0, scale: { x: 1, y: 1 }, transform: { x: st.x * 2 - 1, y: 1 - st.y * 2 } };

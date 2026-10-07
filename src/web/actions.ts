@@ -6,7 +6,7 @@ import { speakWeight, splitJaText } from '../shared/chunks.js';
 import { autoEdit, ensureTimelineSpeeds, markCaptionReview, normalizeScenes, recomputeCut, splitScenesToCutLength, timelineOf } from '../shared/project.js';
 import { captionOutputTimings, newId, sceneOutputRanges } from '../shared/segment.js';
 import { autoMotions } from '../shared/motion.js';
-import { drawCaption, effectiveStyle } from '../shared/captionRender.js';
+import { drawCaption, effectiveStyle, layoutCaption } from '../shared/captionRender.js';
 import { displayFromRaw } from '../shared/jatext.js';
 import { applyTextFixes } from '../shared/script.js';
 import { outToSrc, srcToOut } from '../shared/timemap.js';
@@ -912,8 +912,20 @@ export async function startCapcutExport(): Promise<void> {
       caps.push({ outStart: t.outStart, outEnd: t.outEnd, png: crop.toDataURL('image/png'), x, y, w, h });
     }
   }
+  // 「CapCut で編集できる文字」: 折り返しの位置はこのアプリの見た目に合わせて送る
+  const textLines: Record<string, string[]> = {};
+  if (!p.capcut && p.export.capcutCaptions === 'text') {
+    const g = document.createElement('canvas').getContext('2d')!;
+    for (const c of p.captions) {
+      if (!c.text.trim()) continue;
+      const style = effectiveStyle(p.style, c);
+      const font = renderFontFor(style);
+      if (!font) continue;
+      textLines[c.id] = layoutCaption(g, c.text.trim(), style, font, p.export.width, p.export.height).lines;
+    }
+  }
   try {
-    const job = await api.startCapcut(p.id, p, caps);
+    const job = await api.startCapcut(p.id, p, caps, textLines);
     watchJob(job, (j) => {
       if (j.status === 'done') {
         const r = j.result as { draftName: string; appVersion: string; notes: string[] };
