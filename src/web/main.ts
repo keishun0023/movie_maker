@@ -48,6 +48,7 @@ async function showHome() {
       h('h1', null, '縦型動画メーカー'),
       h('p', { class: 'lead' }, '読み上げ音声から、無音カット・文字起こし・テロップ・シーンを自動で作り、画像や動画をあてはめて 9:16 の動画を書き出します。'),
       h('div', { class: 'card' }, h('h2', null, '新しく作る'), h('div', { class: 'row gap' }, nameIn, button('作成', () => void create(), { class: 'primary' }))),
+      h('div', { class: 'card' }, h('h2', null, '写真投稿'), h('p', { class: 'hint' }, 'テーマから「表紙 + ✖/〇 の比較ページ」の写真投稿(画像の束)を作ります。'), h('a', { href: '/carousel' }, '写真投稿メーカーを開く →')),
       h(
         'div',
         { class: 'card' },

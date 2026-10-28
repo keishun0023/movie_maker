@@ -1,0 +1,105 @@
+// 写真投稿(比較カルーセル)の保存。動画のプロジェクトとは別のフォルダ(carousels/<id>)に、
+// carousel.json・使う画像(images)・書き出した画像(exports)を置く。
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import fsp from 'node:fs/promises';
+import type { IncomingMessage } from 'node:http';
+import path from 'node:path';
+import { createCarousel, type Carousel, type CarouselImage } from '../../shared/carousel.js';
+import { DATA_DIR } from '../config.js';
+import { assertId, atomicWrite, HttpError } from '../store.js';
+
+export const CAROUSELS_DIR = path.join(DATA_DIR, 'carousels');
+
+/** 画面に表示できる画像の拡張子 */
+export const IMAGE_EXT = ['.jpg', '.jpeg', '.png', '.webp', '.gif'];
+/** 1枚の画像の上限 */
+export const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
+
+export function carouselDir(id: string): string {
+  return path.join(CAROUSELS_DIR, assertId(id));
+}
+
+/** カルーセルのフォルダ内のファイル(images / exports の中だけ) */
+export function carouselFile(id: string, dir: 'images' | 'exports', name: string): string {
+  const base = path.join(carouselDir(id), dir);
+  const p = path.resolve(base, path.basename(name));
+  if (!p.startsWith(base + path.sep)) throw new HttpError(400, '不正なパスです');
+  return p;
+}
+
+export async function listCarousels(): Promise<{ id: string; name: string; updatedAt: string; pages: number }[]> {
+  await fsp.mkdir(CAROUSELS_DIR, { recursive: true });
+  const out: { id: string; name: string; updatedAt: string; pages: number }[] = [];
+  for (const d of await fsp.readdir(CAROUSELS_DIR, { withFileTypes: true })) {
+    if (!d.isDirectory()) continue;
+    try {
+      const j = JSON.parse(await fsp.readFile(path.join(CAROUSELS_DIR, d.name, 'carousel.json'), 'utf8')) as Carousel;
+      out.push({ id: d.name, name: j.name ?? d.name, updatedAt: j.updatedAt ?? '', pages: j.pages?.length ?? 0 });
+    } catch {
+      /* 壊れたものは一覧に出さない */
+    }
+  }
+  return out.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+}
+
+export async function newCarousel(name: string): Promise<Carousel> {
+  const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const id = `c${stamp}-${crypto.randomBytes(4).toString('hex')}`;
+  const c = createCarousel(id, name.trim() || '新しい写真投稿');
+  for (const d of ['images', 'exports']) await fsp.mkdir(path.join(carouselDir(id), d), { recursive: true });
+  await saveCarousel(c);
+  return c;
+}
+
+export async function loadCarousel(id: string): Promise<Carousel> {
+  try {
+    const j = JSON.parse(await fsp.readFile(path.join(carouselDir(id), 'carousel.json'), 'utf8')) as Carousel;
+    // 古い保存形式でも開けるよう、足りない項目は初期値で埋める
+    const base = createCarousel(id, j.name ?? '');
+    return { ...base, ...j, id, style: { ...base.style, ...j.style } };
+  } catch (e) {
+    if (e instanceof HttpError) throw e;
+    throw new HttpError(404, '写真投稿が見つかりません');
+  }
+}
+
+const chains = new Map<string, Promise<void>>();
+
+export async function saveCarousel(c: Carousel): Promise<Carousel> {
+  const id = assertId(c.id);
+  const next: Carousel = { ...c, updatedAt: new Date().toISOString() };
+  const json = JSON.stringify(next, null, 1);
+  const job = (chains.get(id) ?? Promise.resolve()).then(() => atomicWrite(path.join(carouselDir(id), 'carousel.json'), json));
+  chains.set(id, job.catch(() => undefined));
+  await job;
+  return next;
+}
+
+export async function deleteCarousel(id: string): Promise<void> {
+  await fsp.rm(carouselDir(id), { recursive: true, force: true });
+}
+
+/** 画像のバイト列を images に保存する(同じ内容なら同じファイル名) */
+export async function saveImage(id: string, buf: Buffer, ext: string, meta: Omit<CarouselImage, 'file'>): Promise<CarouselImage> {
+  const e = ext.toLowerCase() === '.jpeg' ? '.jpg' : ext.toLowerCase();
+  if (!IMAGE_EXT.includes(e)) throw new HttpError(415, `使えない画像の形式です(${ext || '不明'})。JPEG・PNG・WebP・GIF に対応しています`);
+  const name = crypto.createHash('sha256').update(buf).digest('hex').slice(0, 24) + e;
+  const file = carouselFile(id, 'images', name);
+  if (!fs.existsSync(file)) await atomicWrite(file, buf);
+  return { file: `images/${name}`, ...meta };
+}
+
+/** ブラウザから送られた画像(x-filename ヘッダー付き)を保存する */
+export async function uploadImage(id: string, req: IncomingMessage): Promise<CarouselImage> {
+  const name = path.basename(decodeURIComponent(String(req.headers['x-filename'] ?? 'image')));
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const c of req) {
+    size += (c as Buffer).length;
+    if (size > MAX_IMAGE_BYTES) throw new HttpError(413, '画像が大きすぎます(25MBまで)');
+    chunks.push(c as Buffer);
+  }
+  if (size === 0) throw new HttpError(400, '空のファイルです');
+  return saveImage(id, Buffer.concat(chunks), path.extname(name), { source: 'upload' });
+}

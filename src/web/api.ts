@@ -1,7 +1,7 @@
 // ローカルAPIの呼び出し。
 import type { AnalysisData, Asset, FontInfo, JobInfo, Project, StylePreset, Timeline } from '../shared/types.js';
 
-async function call<T>(method: string, url: string, body?: unknown, raw?: BodyInit, headers: Record<string, string> = {}): Promise<T> {
+export async function call<T>(method: string, url: string, body?: unknown, raw?: BodyInit, headers: Record<string, string> = {}): Promise<T> {
   const init: RequestInit = { method, headers: { 'X-TDM': '1', ...headers } };
   if (raw !== undefined) init.body = raw;
   else if (body !== undefined) {

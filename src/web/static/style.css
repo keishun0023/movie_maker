@@ -231,3 +231,30 @@ a { color: var(--accent); }
 .tempo-graph .tempo-dot.selected { stroke: #ffd24d; stroke-width: 3; }
 .tempo-graph .tempo-bar { fill: #3d8f6f; }
 .tempo-graph .tempo-bar.manual { fill: #fff; }
+
+/* 写真投稿メーカー */
+.cr-layout { display: flex; height: 100vh; }
+.cr-side { width: 360px; flex: none; overflow-y: auto; padding: 14px 16px 40px; background: var(--panel); border-right: 1px solid var(--line); }
+.cr-side h3 { font-size: 14px; margin: 18px 0 6px; padding-top: 10px; border-top: 1px solid var(--line); }
+.cr-side input[type='text'], .cr-side input[type='password'] { width: 100%; }
+.cr-pages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-wrap: wrap; gap: 16px; align-content: flex-start; }
+.page-card { width: 300px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+.page-card input[type='text'] { width: 100%; }
+.page-head { margin-bottom: 2px; }
+.page-canvas { width: 278px; height: 494px; border-radius: 8px; align-self: center; background: #000; }
+.sides { display: flex; gap: 6px; }
+.side-editor { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.side-title { font-size: 12px; color: var(--muted); font-weight: 600; }
+.img-slot { display: flex; gap: 6px; align-items: flex-start; }
+.side-editor .img-slot { flex-direction: column; }
+.img-slot-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.img-thumb { width: 54px; height: 72px; object-fit: cover; border-radius: 4px; flex: none; background: #111317; }
+.img-thumb.empty { display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 11px; border: 1px dashed var(--line); }
+.grow { flex: 1; min-width: 0; }
+.narrow { width: 90px !important; flex: none; }
+.key-row { margin: 8px 0; }
+.cr-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 50; }
+.cr-dialog { width: min(920px, 94vw); max-height: 88vh; overflow-y: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+.stock-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; margin-top: 12px; }
+.stock-hit { padding: 0; border-radius: 6px; overflow: hidden; height: 190px; }
+.stock-hit img { width: 100%; height: 100%; object-fit: cover; display: block; }

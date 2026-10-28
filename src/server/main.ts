@@ -4,6 +4,7 @@ import path from 'node:path';
 import { HOST, PORT, SHARED_JS_DIR, WEB_JS_DIR, WEB_STATIC_DIR } from './config.js';
 import { safeJoin, sendFile, sendJson, type Req } from './http.js';
 import { router } from './routes.js';
+import './carouselRoutes.js';
 import { HttpError } from './store.js';
 import { scanFonts } from './fonts.js';
 import { systemInfo } from './system.js';
@@ -46,6 +47,7 @@ const server = http.createServer(async (rawReq, res) => {
     if (req.method !== 'GET' && req.method !== 'HEAD') throw new HttpError(405, '許可されていない操作です');
     res.setHeader('Content-Security-Policy', "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; connect-src 'self'");
     if (url.pathname === '/' || url.pathname === '/index.html') return await sendFile(req, res, path.join(WEB_STATIC_DIR, 'index.html'));
+    if (url.pathname === '/carousel') return await sendFile(req, res, path.join(WEB_STATIC_DIR, 'carousel.html'));
     let file: string | null = null;
     if (url.pathname.startsWith('/static/')) file = safeJoin(WEB_STATIC_DIR, url.pathname.slice('/static/'.length));
     else if (url.pathname.startsWith('/js/web/')) file = safeJoin(WEB_JS_DIR, url.pathname.slice('/js/web/'.length));

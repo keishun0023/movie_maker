@@ -7,7 +7,7 @@ import type { Asset, JobInfo, Project, StylePreset, Timeline, Token, Transcript 
 import { speechChunks, tokensFromChunks } from '../shared/chunks.js';
 import { alignChunkTokens } from '../shared/align.js';
 import { geminiTranscribe, listGeminiModels, resolveGeminiModel } from './asr/gemini.js';
-import { anthropicKey, anthropicKeySource, geminiKey, geminiKeySource, setAnthropicKey, setGeminiKey } from './secrets.js';
+import { anthropicKey, anthropicKeySource, geminiKey, geminiKeySource, setAnthropicKey, setGeminiKey, stockKeySource } from './secrets.js';
 import { aiAssign, videoShots, videoStrip } from './ai/assign.js';
 import { outToSrc } from '../shared/timemap.js';
 import { hintTerms, mergeHints } from '../shared/script.js';
@@ -344,9 +344,11 @@ router.get('/api/projects/:id/analysis/:key', async (req, res) => {
 
 // ---- 設定(APIキー) ----
 
-router.get('/api/settings', (_req, res) => sendJson(res, 200, { geminiKeySource: geminiKeySource(), anthropicKeySource: anthropicKeySource() }));
+router.get('/api/settings', (_req, res) =>
+  sendJson(res, 200, { geminiKeySource: geminiKeySource(), anthropicKeySource: anthropicKeySource(), pixabayKeySource: stockKeySource('pixabay'), pexelsKeySource: stockKeySource('pexels') }),
+);
 
-function cleanKey(raw: unknown): string {
+export function cleanKey(raw: unknown): string {
   // キーの形式は変わることがあるので、ヘッダーに使える文字かだけを確認する
   const k = String(raw ?? '').trim().replace(/^["'“”]+|["'“”]+$/g, '');
   if (k && !/^[\x21-\x7e]{10,1000}$/.test(k)) throw new HttpError(400, 'APIキーに使えない文字(空白や全角文字など)が含まれています。コピーし直して貼り付けてください');

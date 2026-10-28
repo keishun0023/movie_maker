@@ -263,7 +263,7 @@ const SCHEMA = {
   additionalProperties: false,
 } as const;
 
-function friendlyError(e: unknown, AnthropicCls: typeof Anthropic): Error {
+export function friendlyError(e: unknown, AnthropicCls: typeof Anthropic): Error {
   if (e instanceof AnthropicCls.AuthenticationError) return new Error('Claude の APIキーが正しくありません。設定し直してください。');
   if (e instanceof AnthropicCls.PermissionDeniedError) return new Error('この APIキーでは Claude API を使えません(権限がありません)。Claude Console の設定を確認してください。');
   if (e instanceof AnthropicCls.NotFoundError) return new Error(`モデル ${AI_MODEL} が見つかりません。`);
