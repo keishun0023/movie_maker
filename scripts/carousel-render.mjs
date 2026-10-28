@@ -8,6 +8,7 @@
 //
 // 指定.json の形(画像はファイルのパス。指定.json からの相対パスも可。省略すると点線の枠になる。
 // image の代わりに "query": "pillow", "kind": "photo" | "illustration" を書くと、素材サイトで探して入れる。
+// style の backgroundImage・leftCharacter・rightCharacter は、ファイルのパスの代わりに { "query": ..., "kind": ... } も書ける。
 // その場合は環境変数 PIXABAY_API_KEY か PEXELS_API_KEY が必要):
 // {
 //   "name": "ニキビ習慣",
@@ -61,7 +62,11 @@ const port = 5300 + Math.floor(Math.random() * 600);
 const base = `http://127.0.0.1:${port}`;
 const H = { 'X-TDM': '1', Origin: base, 'Content-Type': 'application/json' };
 
-const server = spawn(process.execPath, [path.join(root, 'dist/server/main.js')], { env: { ...process.env, TDM_DATA_DIR: dataDir, PORT: String(port) }, stdio: 'ignore' });
+const server = spawn(process.execPath, [path.join(root, 'dist/server/main.js')], {
+  // プロキシのある環境では、Node の fetch もプロキシを通す
+  env: { ...process.env, TDM_DATA_DIR: dataDir, PORT: String(port), ...(process.env.HTTPS_PROXY ? { NODE_USE_ENV_PROXY: '1', NODE_NO_WARNINGS: '1' } : {}) },
+  stdio: 'ignore',
+});
 const cleanup = () => {
   server.kill();
   fs.rmSync(dataDir, { recursive: true, force: true });
@@ -85,8 +90,19 @@ try {
     }
   }
   const c = await api('POST', '/api/carousels', { name: spec.name ?? '写真投稿' });
+  // 画像はファイルのパスか、{ "query": "検索語", "kind": "photo" | "illustration" }(素材サイトの1件目を使う)
   const upload = async (p) => {
     if (!p) return undefined;
+    if (typeof p === 'object') {
+      const kind = p.kind === 'illustration' ? 'illustration' : 'photo';
+      const provider = process.env.PIXABAY_API_KEY || kind === 'illustration' ? 'pixabay' : 'pexels';
+      const hits = await api('GET', `/api/stock/search?provider=${provider}&kind=${kind}&q=${encodeURIComponent(String(p.query ?? ''))}`);
+      if (!hits.length) {
+        console.error(`画像が見つかりませんでした: ${p.query}`);
+        return undefined;
+      }
+      return api('POST', `/api/carousels/${c.id}/stock`, hits[0]);
+    }
     const file = path.resolve(specDir, p);
     return api('POST', `/api/carousels/${c.id}/images`, fs.readFileSync(file), { ...H, 'Content-Type': 'application/octet-stream', 'x-filename': encodeURIComponent(path.basename(file)) });
   };
