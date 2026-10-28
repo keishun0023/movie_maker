@@ -25,7 +25,10 @@ description: チャットの中で TikTok の写真投稿(表紙 + ✖/〇 や �
 - 使ってよいのは、利用者がチャットに添付した画像と、無料で商用利用できる素材サイト(Pexels・Pixabay)の画像だけ。参考として貼られた他人の投稿の画像や、ウェブで拾った画像は使わない
 - 添付画像はセッションの images フォルダに保存されている(メッセージの `[Image: source: ...]` のパス)。どの画像をどの枠に入れるか分からなければ聞く
 - 画像がない枠は点線の枠になる。下書きとしてはそのまま出してよく、あとで画像を足して作り直す
-- 素材サイトから取るには、その環境のネットワークで `api.pexels.com` `images.pexels.com`(または `pixabay.com` `cdn.pixabay.com`)が許可されていて、`PEXELS_API_KEY` / `PIXABAY_API_KEY` がある必要がある。なければアプリ側(Mac)で取るよう案内する
+- 素材サイトから取るには、枠に `image` の代わりに `"query": "英語の検索語", "kind": "photo" | "illustration"` を書き、環境変数 `PIXABAY_API_KEY`(または `PEXELS_API_KEY`)を付けてスクリプトを実行する。スクリプトがアプリと同じ処理で探して入れる(同じ画像は使い回さない)
+  - その環境のネットワークで `pixabay.com` `cdn.pixabay.com`(Pexels なら `api.pexels.com` `images.pexels.com`)が許可されている必要がある。「素材サイトに接続できませんでした」と出たら、環境の Network access で許可するよう案内する(Node の fetch がプロキシを通らないときは `NODE_USE_ENV_PROXY=1` を付ける)
+  - キーはリポジトリに書かない(スクラッチパッドの env ファイルか環境の設定に置く)
+  - 合わない画像が入ったら、検索語を変えるか、その枠だけ利用者の画像にして描き直す
 
 ## 3. 描いて渡す
 
