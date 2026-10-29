@@ -50,7 +50,7 @@ test('素材ライブラリ: フォルダに置いた画像を分類つきで取
     const c = await newCarousel('テスト');
     const im = await lib.libraryToCarousel(c.id, items.find((x) => x.category === '商品')!.id);
     assert.equal(im.source, 'library');
-    assert.ok(fs.existsSync(path.join(dataDir, 'carousels', c.id, im.file)));
+    assert.ok(fs.existsSync(path.join(dataDir, '写真投稿素材', '企画', c.id, im.file)));
 
     // フォーマットは、保存するまでは見本を返す
     assert.ok((await lib.listFormats()).some((f) => f.name === 'ドブス/爆美女'));

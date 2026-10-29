@@ -6,10 +6,10 @@ import fsp from 'node:fs/promises';
 import type { IncomingMessage } from 'node:http';
 import path from 'node:path';
 import { createCarousel, type Carousel, type CarouselImage } from '../../shared/carousel.js';
-import { DATA_DIR } from '../config.js';
+import { carouselsRoot } from './paths.js';
 import { assertId, atomicWrite, HttpError } from '../store.js';
 
-export const CAROUSELS_DIR = path.join(DATA_DIR, 'carousels');
+
 
 /** 画面に表示できる画像の拡張子 */
 export const IMAGE_EXT = ['.jpg', '.jpeg', '.png', '.webp', '.gif'];
@@ -17,7 +17,7 @@ export const IMAGE_EXT = ['.jpg', '.jpeg', '.png', '.webp', '.gif'];
 export const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
 
 export function carouselDir(id: string): string {
-  return path.join(CAROUSELS_DIR, assertId(id));
+  return path.join(carouselsRoot(), assertId(id));
 }
 
 /** カルーセルのフォルダ内のファイル(images / exports の中だけ) */
@@ -44,9 +44,10 @@ export interface CarouselSummary {
 }
 
 export async function listCarousels(): Promise<CarouselSummary[]> {
-  await fsp.mkdir(CAROUSELS_DIR, { recursive: true });
+  const root = carouselsRoot();
+  await fsp.mkdir(root, { recursive: true });
   const out: CarouselSummary[] = [];
-  for (const d of await fsp.readdir(CAROUSELS_DIR, { withFileTypes: true })) {
+  for (const d of await fsp.readdir(root, { withFileTypes: true })) {
     if (!d.isDirectory()) continue;
     try {
       const j = await loadCarousel(d.name);

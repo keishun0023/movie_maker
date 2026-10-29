@@ -158,7 +158,7 @@ try {
   } finally {
     await browser.close();
   }
-  const exp = path.join(dataDir, 'carousels', c.id, 'exports');
+  const exp = path.join(dataDir, '写真投稿素材', '企画', c.id, 'exports');
   fs.mkdirSync(outDir, { recursive: true });
   for (const f of fs.readdirSync(exp)) fs.copyFileSync(path.join(exp, f), path.join(outDir, f));
   console.log(fs.readdirSync(exp).map((f) => path.join(outDir, f)).join('\n'));

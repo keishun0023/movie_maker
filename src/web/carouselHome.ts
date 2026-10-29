@@ -292,6 +292,8 @@ async function formatsTab(body: HTMLElement) {
 
 // ---------- 素材ライブラリ ----------
 
+const MOVE_NOTE = '保存先を変えます。今のフォルダの素材・フォーマット・企画・書き出しは、新しいフォルダへ移します(量が多いと少し時間がかかります)。よろしいですか?';
+
 async function libraryTab(body: HTMLElement) {
   let info = await capi.library();
   let q = '';
@@ -362,15 +364,17 @@ async function libraryTab(body: HTMLElement) {
       'div',
       { class: 'card' },
       h('h2', null, '保存先のフォルダ'),
-      h('div', { class: 'row gap wrap' }, h('code', { class: 'grow' }, info.dir), button('フォルダを開く', () => void capi.revealLibrary(), { class: 'small' }), button('フォルダを変える', () => void capi.pickLibraryDir().then(() => showHome('library')), { class: 'small' })),
+      h('div', { class: 'row gap wrap' }, h('code', { class: 'grow' }, info.dir), button('フォルダを開く', () => void capi.revealLibrary(), { class: 'small' }), button('フォルダを変える', () => confirm(MOVE_NOTE) && void capi.pickLibraryDir().then(() => showHome('library'), (e) => toast((e as Error).message, 'error')), { class: 'small' })),
       inDrive
-        ? h('p', { class: 'ok-box' }, 'Google ドライブの同期フォルダです。入れた素材と書き出した画像は、Drive にも保存されます。')
+        ? h('p', { class: 'ok-box' }, 'Google ドライブの同期フォルダです。素材・フォーマット・企画・書き出しは Drive に保存されます(Google ドライブの設定が「ストリーミング」なら、Mac には中身が残りません)。')
         : info.driveCandidates.length
           ? h(
               'div',
               null,
-              h('p', { class: 'hint' }, 'Google ドライブ(パソコン版)の同期フォルダが見つかりました。ここにすると、素材と書き出しが Drive にも保存されます(今の素材は移りません。必要ならフォルダごとコピーしてから切り替えてください)。'),
-              info.driveCandidates.map((d) => button(`「${d}/写真投稿素材」にする`, () => void capi.setLibraryDir(`${d}/写真投稿素材`).then(() => showHome('library')), { class: 'small' })),
+              h('p', { class: 'hint' }, 'Google ドライブ(パソコン版)の同期フォルダが見つかりました。ここにすると、素材・フォーマット・企画・書き出しがすべて Drive に入ります。Google ドライブの設定を「ストリーミング」にしておけば、Mac には中身が残りません。'),
+              info.driveCandidates.map((d) =>
+                button(`「${d}/写真投稿素材」にする`, () => confirm(MOVE_NOTE) && void capi.setLibraryDir(`${d}/写真投稿素材`).then(() => showHome('library'), (e) => toast((e as Error).message, 'error')), { class: 'small primary' }),
+              ),
             )
           : h('p', { class: 'hint' }, 'Google ドライブに保存したいときは、Mac に「Google ドライブ」(パソコン版)を入れて、その中のフォルダを選んでください。フォルダの中の「キャラクター」「商品」などのサブフォルダに画像を置くと、その分類で読み込みます。'),
     ),

@@ -83,7 +83,7 @@ test('写真投稿: Claude で中身を書き、素材サイトの画像を重�
     const used = imgs.filter((x) => !!x);
     assert.equal(used.length, 3, JSON.stringify(imgs));
     assert.equal(new Set(used.map((x) => x!.pageUrl)).size, 3);
-    assert.ok(used.every((x) => x!.source === 'pexels' && /^P\d$/.test(x!.credit ?? '') && fs.existsSync(path.join(dataDir, 'carousels', 'ctest-1', x!.file))));
+    assert.ok(used.every((x) => x!.source === 'pexels' && /^P\d$/.test(x!.credit ?? '') && fs.existsSync(path.join(dataDir, '写真投稿素材', '企画', 'ctest-1', x!.file))));
     // 見つからなかった検索語は、短くしてもう一度探す
     assert.ok(searches.includes('nothing here at all') && searches.includes('nothing here at'));
     assert.ok(r.notes.some((n) => n.includes('画像を入れられませんでした')), r.notes.join('\n'));

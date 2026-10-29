@@ -8,42 +8,11 @@ import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { LIBRARY_CATEGORIES, type CarouselFormat, type CarouselImage, type LibraryCategory, type LibraryItem } from '../../shared/carousel.js';
-import { DATA_DIR } from '../config.js';
 import { atomicWrite, HttpError } from '../store.js';
+import { CAROUSELS_DIR_NAME, EXPORT_DIR_NAME, libraryDir } from './paths.js';
 import { IMAGE_EXT, saveImage } from './store.js';
 
-const SETTINGS_FILE = path.join(DATA_DIR, 'carousel-settings.json');
-export const DEFAULT_LIBRARY_DIR = path.join(DATA_DIR, '写真投稿素材');
-const EXPORT_DIR_NAME = '書き出し';
-
-interface Settings {
-  libraryDir?: string;
-}
-
-function readSettings(): Settings {
-  try {
-    return JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')) as Settings;
-  } catch {
-    return {};
-  }
-}
-
-export function libraryDir(): string {
-  return readSettings().libraryDir || DEFAULT_LIBRARY_DIR;
-}
-
-export async function setLibraryDir(dir: string | null): Promise<string> {
-  const s = readSettings();
-  if (dir) {
-    const abs = path.resolve(dir);
-    // 親のフォルダがあれば、そこに作る(Drive の中に「写真投稿素材」を作るときなど)
-    if (!fs.existsSync(path.dirname(abs))) throw new HttpError(400, `フォルダが見つかりません: ${path.dirname(abs)}`);
-    await fsp.mkdir(abs, { recursive: true });
-    s.libraryDir = abs;
-  } else delete s.libraryDir;
-  await atomicWrite(SETTINGS_FILE, JSON.stringify(s, null, 1));
-  return libraryDir();
-}
+export { DEFAULT_LIBRARY_DIR, libraryDir, setLibraryDir } from './paths.js';
 
 /** Google ドライブ(パソコン版)の同期フォルダの候補(Mac) */
 export async function driveFolderCandidates(): Promise<string[]> {
@@ -122,7 +91,7 @@ export async function scanLibrary(): Promise<LibraryItem[]> {
         const abs = path.join(dir, e.name);
         const rel = path.relative(root, abs).split(path.sep).join('/').normalize('NFC');
         if (e.isDirectory()) {
-          if (depth < 3 && rel !== EXPORT_DIR_NAME) await walk(abs, depth + 1);
+          if (depth < 3 && rel !== EXPORT_DIR_NAME && rel !== CAROUSELS_DIR_NAME) await walk(abs, depth + 1);
         } else if (IMAGE_EXT.includes(path.extname(e.name).toLowerCase())) found.add(rel);
       }
     };
