@@ -15,7 +15,7 @@ export function assertGeminiModel(m: string): string {
   return m;
 }
 
-function friendlyError(status: number, body: string): Error {
+export function friendlyError(status: number, body: string): Error {
   let msg = '';
   try {
     msg = (JSON.parse(body) as { error?: { message?: string } }).error?.message ?? '';

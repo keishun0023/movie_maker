@@ -370,7 +370,7 @@ function drawCompare(ctx: Ctx, c: Carousel, p: ComparePage) {
   const panelW = W - panelX * 2;
   const colW = panelW / 2;
   const hasChars = !!(c.style.leftCharacter || c.style.rightCharacter);
-  const charH = 360;
+  const charH = 420;
   const charBottom = CAROUSEL_H - 290;
   const charTop = charBottom - charH;
   const bottom = hasChars ? charTop + charH * 0.42 : CAROUSEL_H - 360;
@@ -412,7 +412,7 @@ function drawCompare(ctx: Ctx, c: Carousel, p: ComparePage) {
   [c.style.leftCharacter, c.style.rightCharacter].forEach((im, i) => {
     const el = img(c.id, im);
     if (!el) return;
-    const cw = 380;
+    const cw = 400;
     const x = i === 0 ? W / 2 - cw - 6 : W / 2 + 6;
     drawImageFit(ctx, el, x, charTop, cw, charH, 'contain', 0, true);
   });

@@ -3,57 +3,27 @@
 import {
   captionText,
   creditLines,
+  IMAGE_POLICY_LABELS,
   pageId,
+  STATUS_LABELS,
   type BackgroundPreset,
   type Carousel,
+  type CarouselFormat,
   type CarouselImage,
   type CarouselPage,
+  type CarouselStatus,
   type CompareSide,
   type ImageQuery,
+  type LibraryCategory,
 } from '../shared/carousel.js';
 import type { FontInfo, JobInfo } from '../shared/types.js';
 import { call, waitJob } from './api.js';
+import { capi, type FilledImage, type Settings } from './carouselApi.js';
+import { BACKGROUND_OPTIONS, POLICY_OPTIONS, showHome, STATUS_ORDER } from './carouselHome.js';
+import { openPicker } from './carouselPicker.js';
 import { drawCarouselPage, HEAD_FONT_ID, imageUrl, setImageLoadedCallback, TEXT_FONT_ID, waitImages } from './carouselRender.js';
 import { button, field, h, mount, numInput, select, toast } from './dom.js';
 import { ensureFont, setFontInfos, setFontLoadedCallback } from './fonts.js';
-
-type KeySource = 'env' | 'file' | null;
-type Provider = 'pixabay' | 'pexels';
-interface Settings {
-  anthropicKeySource: KeySource;
-  pixabayKeySource: KeySource;
-  pexelsKeySource: KeySource;
-}
-interface StockHit {
-  provider: Provider;
-  id: string;
-  thumb: string;
-  full: string;
-  width: number;
-  height: number;
-  credit: string;
-  pageUrl: string;
-}
-type FilledImage = { pageId: string; slot: 'cover' | 'left' | 'right'; image: CarouselImage };
-
-const capi = {
-  list: () => call<{ id: string; name: string; updatedAt: string; pages: number }[]>('GET', '/api/carousels'),
-  create: (name: string) => call<Carousel>('POST', '/api/carousels', { name }),
-  get: (id: string) => call<Carousel>('GET', `/api/carousels/${id}`),
-  save: (c: Carousel) => call<{ updatedAt: string }>('PUT', `/api/carousels/${c.id}`, c),
-  remove: (id: string) => call<{ ok: boolean }>('DELETE', `/api/carousels/${id}`, {}),
-  generate: (c: Carousel) => call<JobInfo>('POST', `/api/carousels/${c.id}/generate`, { carousel: c }),
-  fillImages: (c: Carousel) => call<JobInfo>('POST', `/api/carousels/${c.id}/fill-images`, { carousel: c }),
-  upload: (id: string, file: File) =>
-    call<CarouselImage>('POST', `/api/carousels/${id}/images`, undefined, file, { 'x-filename': encodeURIComponent(file.name), 'Content-Type': 'application/octet-stream' }),
-  pickStock: (id: string, hit: StockHit) => call<CarouselImage>('POST', `/api/carousels/${id}/stock`, hit),
-  search: (provider: Provider, q: ImageQuery) => call<StockHit[]>('GET', `/api/stock/search?provider=${provider}&kind=${q.kind}&q=${encodeURIComponent(q.q)}`),
-  export: (id: string, pngs: string[]) => call<{ zip: string; files: string[] }>('POST', `/api/carousels/${id}/export`, { pngs }),
-  reveal: (id: string) => call<{ path: string }>('POST', `/api/carousels/${id}/reveal`, {}),
-  settings: () => call<Settings>('GET', '/api/settings'),
-  setAnthropicKey: (key: string | null) => call<unknown>('PUT', '/api/settings/anthropic-key', { key }),
-  setStockKey: (provider: Provider, key: string | null) => call<unknown>('PUT', '/api/settings/stock-key', { provider, key }),
-};
 
 const app = document.getElementById('app')!;
 
@@ -69,72 +39,25 @@ async function boot() {
   void ensureFont(HEAD_FONT_ID);
   const id = new URLSearchParams(location.search).get('c');
   if (id) await openEditor(id);
-  else await showHome();
-}
-
-// ---------- 一覧 ----------
-
-async function showHome() {
-  document.title = '写真投稿メーカー';
-  const list = await capi.list();
-  const nameIn = h('input', { type: 'text', placeholder: '投稿の名前(例: ニキビ習慣)' });
-  const create = async () => {
-    const c = await capi.create(nameIn.value || '新しい写真投稿');
-    location.search = `?c=${c.id}`;
-  };
-  nameIn.addEventListener('keydown', (e) => e.key === 'Enter' && void create());
-  mount(
-    app,
-    h(
-      'div',
-      { class: 'home' },
-      h('p', null, h('a', { href: '/' }, '← 縦型動画メーカーへ')),
-      h('h1', null, '写真投稿メーカー'),
-      h('p', { class: 'lead' }, 'テーマを入れると、Claude が「表紙 + ✖/〇 の比較ページ」の写真投稿を考え、素材サイトの画像を入れて、1080×1920 の画像として書き出します。'),
-      h('div', { class: 'card' }, h('h2', null, '新しく作る'), h('div', { class: 'row gap' }, nameIn, button('作成', () => void create(), { class: 'primary' }))),
-      h(
-        'div',
-        { class: 'card' },
-        h('h2', null, '作った写真投稿'),
-        list.length
-          ? h(
-              'ul',
-              { class: 'project-list' },
-              list.map((x) =>
-                h(
-                  'li',
-                  null,
-                  h('a', { href: `?c=${x.id}` }, x.name),
-                  h('span', { class: 'hint' }, ` ${x.pages} 枚 / ${new Date(x.updatedAt).toLocaleString('ja-JP')}`),
-                  button('削除', async () => {
-                    if (!confirm(`「${x.name}」を削除しますか?入れた画像と書き出したファイルも消えます。`)) return;
-                    await capi.remove(x.id);
-                    void showHome();
-                  }, { class: 'small danger' }),
-                ),
-              ),
-            )
-          : h('p', { class: 'hint' }, 'まだありません'),
-      ),
-    ),
-  );
+  else await showHome((new URLSearchParams(location.search).get('tab') as 'board') || 'board');
 }
 
 // ---------- 編集 ----------
 
 let c: Carousel;
-let settings: Settings = { anthropicKeySource: null, pixabayKeySource: null, pexelsKeySource: null };
+let settings: Settings = { anthropicKeySource: null, geminiKeySource: null, pixabayKeySource: null, pexelsKeySource: null };
+let formats: CarouselFormat[] = [];
 let canvases: HTMLCanvasElement[] = [];
 let busy = '';
 let notes: string[] = [];
-let lastExport: { zip: string; files: string[] } | null = null;
+let lastExport: { zip: string; files: string[]; libraryPath: string | null } | null = null;
 let saveTimer = 0;
 
 async function openEditor(id: string) {
   c = await capi.get(id);
   // 表紙は必ず1枚目に置く
   if (c.pages[0]?.kind !== 'cover') c.pages.unshift({ id: pageId(), kind: 'cover', kicker: '', title: '', query: { q: '', kind: 'photo' } });
-  settings = await capi.settings().catch(() => settings);
+  [settings, formats] = await Promise.all([capi.settings().catch(() => settings), capi.formats().catch(() => [])]);
   rebuild();
 }
 
@@ -175,35 +98,44 @@ function textArea(value: string, onInput: (v: string) => void, rows = 3, placeho
   return el;
 }
 
-function filePicker(onFile: (f: File) => void | Promise<void>, label = '画像を入れる'): HTMLElement {
-  const input = h('input', { type: 'file', accept: 'image/jpeg,image/png,image/webp,image/gif', style: { display: 'none' } });
-  input.addEventListener('change', () => {
-    const f = input.files?.[0];
-    input.value = '';
-    if (f) void Promise.resolve(onFile(f)).catch((e) => toast((e as Error).message, 'error'));
-  });
-  return h('span', null, input, button(label, () => input.click(), { class: 'small' }));
-}
-
-/** 画像の枠(サムネイル + 探す / 入れる / 外す) */
-function imageSlot(im: CarouselImage | undefined, query: ImageQuery | null, set: (im: CarouselImage | undefined) => void, onQuery?: (q: ImageQuery) => void): HTMLElement {
-  const upload = async (f: File) => set(await capi.upload(c.id, f));
+/** 画像の枠(サムネイル + 選ぶ / 外す)。選ぶと、素材ライブラリ・素材サイト・AI・手元の画像から選べる */
+function imageSlot(
+  im: CarouselImage | undefined,
+  query: ImageQuery | null,
+  set: (im: CarouselImage | undefined) => void,
+  opt: { onQuery?: (q: ImageQuery) => void; tags?: string[]; category?: LibraryCategory; transparent?: boolean; aspectRatio?: '3:4' | '9:16'; title?: string } = {},
+): HTMLElement {
+  const aiStyle = c.imagePolicy === 'ai-photo' ? 'photo' : 'anime';
+  const firstTab = c.imagePolicy === 'library' || !query ? 'library' : c.imagePolicy.startsWith('ai') ? 'ai' : 'stock';
+  const pick = () =>
+    openPicker(
+      {
+        settings,
+        carouselId: c.id,
+        query: query ?? undefined,
+        tags: opt.tags,
+        tab: firstTab,
+        category: opt.category,
+        title: opt.title,
+        ai: { style: aiStyle, transparent: !!opt.transparent, aspectRatio: opt.aspectRatio ?? '3:4' },
+      },
+      (p) => p.image && set(p.image),
+    );
+  const src = im ? { upload: '', library: 'ライブラリ', ai: 'AI', pixabay: 'Pixabay', pexels: 'Pexels' }[im.source] : '';
   return h(
     'div',
     { class: 'img-slot' },
-    im ? h('img', { src: imageUrl(c.id, im), class: 'img-thumb', alt: '' }) : h('div', { class: 'img-thumb empty' }, 'なし'),
+    im ? h('img', { src: imageUrl(c.id, im), class: 'img-thumb', alt: '', onClick: pick }) : h('div', { class: 'img-thumb empty', onClick: pick }, 'なし'),
     h(
       'div',
       { class: 'img-slot-body' },
-      query && onQuery ? textIn(query.q, (v) => onQuery({ ...query, q: v }), { placeholder: '検索語(英語)', title: '「画像を探して入れる」で使う検索語' }) : null,
+      query && opt.onQuery ? textIn(query.q, (v) => opt.onQuery!({ ...query, q: v }), { placeholder: c.imagePolicy.startsWith('ai') ? '作る画像の内容' : c.imagePolicy === 'library' ? '探す言葉' : '検索語(英語)', title: '「画像を入れる」で使う言葉' }) : null,
       h(
         'div',
         { class: 'row gap wrap' },
-        query && onQuery ? select(query.kind, [['photo', '写真'], ['illustration', 'イラスト']], (v) => onQuery({ ...query, kind: v })) : null,
-        query ? button('素材サイトで探す', () => openSearch(query, set), { class: 'small' }) : null,
-        filePicker(upload),
+        button('画像を選ぶ', pick, { class: 'small' }),
         im ? button('外す', () => set(undefined), { class: 'small' }) : null,
-        im && im.source !== 'upload' && im.pageUrl ? h('a', { href: im.pageUrl, target: '_blank', rel: 'noreferrer', class: 'hint' }, `${im.credit ?? ''} / ${im.source === 'pixabay' ? 'Pixabay' : 'Pexels'}`) : null,
+        im && im.pageUrl ? h('a', { href: im.pageUrl, target: '_blank', rel: 'noreferrer', class: 'hint' }, `${im.credit ?? ''} / ${src}`) : src ? h('span', { class: 'hint' }, src) : null,
       ),
     ),
   );
@@ -217,12 +149,11 @@ function sideEditor(label: string, side: CompareSide, pageIndex: number, key: 'l
     h('div', { class: 'side-title' }, label),
     textIn(side.text, (v) => edit((cc) => (get(cc).text = v)), { placeholder: '大きな言葉' }),
     textIn(side.note, (v) => edit((cc) => (get(cc).note = v)), { placeholder: '小さな補足(任意)' }),
-    imageSlot(
-      side.image,
-      side.query,
-      (im) => change((cc) => (get(cc).image = im)),
-      (q) => edit((cc) => (get(cc).query = q)),
-    ),
+    imageSlot(side.image, side.query, (im) => change((cc) => (get(cc).image = im)), {
+      onQuery: (q) => edit((cc) => (get(cc).query = q)),
+      tags: [(c.pages[pageIndex] as Extract<CarouselPage, { kind: 'compare' }>).title, side.text].filter(Boolean),
+      title: `${label}の画像`,
+    }),
   );
 }
 
@@ -252,7 +183,7 @@ function pageCard(p: CarouselPage, i: number): HTMLElement {
       null,
       field('上の一言', textIn(p.kicker, (v) => edit((cc) => (pc(cc).kicker = v)), { placeholder: '皮膚科行く前にこれみて‼️' })),
       field('見出し', textIn(p.title, (v) => edit((cc) => (pc(cc).title = v)), { placeholder: 'ニキビがガチで消えた神習慣' })),
-      field('背景の写真', imageSlot(p.image, p.query, (im) => change((cc) => (pc(cc).image = im)), (q) => edit((cc) => (pc(cc).query = q)))),
+      field('表紙の画像', imageSlot(p.image, p.query, (im) => change((cc) => (pc(cc).image = im)), { onQuery: (q) => edit((cc) => (pc(cc).query = q)), tags: [c.theme, p.title].filter(Boolean), aspectRatio: '9:16', title: '表紙の画像' })),
     );
   } else {
     const pc = (cc: Carousel) => cc.pages[i] as Extract<CarouselPage, { kind: 'compare' }>;
@@ -273,32 +204,21 @@ function pageCard(p: CarouselPage, i: number): HTMLElement {
   return h('div', { class: 'page-card' }, head, cv, body);
 }
 
-function keyRow(label: string, source: KeySource, save: (k: string | null) => Promise<unknown>, help: HTMLElement | string): HTMLElement {
-  const input = h('input', { type: 'password', placeholder: 'APIキー', autocomplete: 'off', class: 'grow' });
-  const run = async (k: string | null) => {
+function sidebar(): HTMLElement {
+  const st = c.style;
+  const policy = c.imagePolicy;
+  const canFill =
+    policy === 'library' || ((policy === 'stock-photo' || policy === 'stock-illustration') && (!!settings.pixabayKeySource || !!settings.pexelsKeySource)) || (policy.startsWith('ai') && !!settings.geminiKeySource);
+  const applyFormat = async (formatId: string) => {
+    if (!formatId) return change((cc) => delete cc.formatId);
     try {
-      await save(k);
-      settings = await capi.settings();
-      rebuild();
+      const next = await capi.applyFormat(c, formatId);
+      change((cc) => Object.assign(cc, next));
     } catch (e) {
       toast((e as Error).message, 'error');
     }
   };
-  return h(
-    'div',
-    { class: 'key-row' },
-    h('div', { class: 'field-label' }, label),
-    source === 'env'
-      ? h('div', { class: 'ok-box' }, '設定済み(環境変数)')
-      : source === 'file'
-        ? h('div', { class: 'ok-box row gap' }, '設定済み', h('span', { class: 'spacer' }), button('削除', () => void run(null), { class: 'small' }))
-        : h('div', null, h('div', { class: 'row gap' }, input, button('保存', () => void run(input.value.trim() || null), { class: 'primary small' })), h('div', { class: 'hint' }, help)),
-  );
-}
-
-function sidebar(): HTMLElement {
-  const st = c.style;
-  const hasStock = !!settings.pixabayKeySource || !!settings.pexelsKeySource;
+  const missing = [!settings.anthropicKeySource ? 'Claude' : '', policy.startsWith('ai') && !settings.geminiKeySource ? 'Gemini' : '', policy.startsWith('stock') && !settings.pixabayKeySource && !settings.pexelsKeySource ? 'Pixabay か Pexels' : ''].filter(Boolean);
   const canGenerate = !!settings.anthropicKeySource && !!c.theme.trim() && !busy;
   const generate = async () => {
     if (c.pages.length > 1 && !confirm('今のページを、Claude が作ったものに置き換えます。よろしいですか?')) return;
@@ -311,7 +231,7 @@ function sidebar(): HTMLElement {
     });
   };
   const fill = () =>
-    runJob('画像を探しています', () => capi.fillImages(c), (r) => {
+    runJob(policy.startsWith('ai') ? 'AI で画像を作っています' : '画像を入れています', () => capi.fillImages(c), (r) => {
       const res = r as { images: FilledImage[]; notes: string[] };
       for (const f of res.images) {
         const p = c.pages.find((x) => x.id === f.pageId);
@@ -339,8 +259,21 @@ function sidebar(): HTMLElement {
   return h(
     'div',
     { class: 'cr-side' },
-    h('p', null, h('a', { href: '/carousel' }, '← 写真投稿の一覧')),
+    h('p', null, h('a', { href: '/carousel' }, '← 企画一覧')),
     field('名前', textIn(c.name, (v) => edit((cc) => (cc.name = v)))),
+    h(
+      'div',
+      { class: 'row gap wrap' },
+      field('ステータス', select<CarouselStatus>(c.status, STATUS_ORDER.map((s) => [s, STATUS_LABELS[s]] as [CarouselStatus, string]), (v) => edit((cc) => (cc.status = v)))),
+      field('投稿予定日', (() => {
+        const d = h('input', { type: 'date', value: c.scheduledOn ?? '' });
+        d.addEventListener('change', () => edit((cc) => (cc.scheduledOn = d.value || undefined)));
+        return d;
+      })()),
+    ),
+    field('フォーマット', select(c.formatId ?? '', [['', 'なし'], ...formats.map((f) => [f.id, f.name] as [string, string])], (v) => void applyFormat(v)), '選ぶと、見た目・枚数・画像の方針・キャラクターをフォーマットの設定にします'),
+    field('メモ', textIn(c.memo, (v) => edit((cc) => (cc.memo = v)))),
+    missing.length ? h('div', { class: 'note' }, `${missing.join('・')} の APIキーが未設定です。`, h('a', { href: '/carousel?tab=settings' }, '設定を開く')) : null,
     h('h3', null, '1 中身を作る'),
     field('テーマ', textArea(c.theme, (v) => {
       edit((cc) => (cc.theme = v));
@@ -350,14 +283,11 @@ function sidebar(): HTMLElement {
     }, 2, '例: ニキビがガチで消えた神習慣 / 垢抜けない人の特徴'), 'どんな投稿にしたいか。Claude がお題と左右の言葉、画像の検索語を考えます。'),
     field('比較ページの枚数', numInput(c.pageCount, { min: 1, max: 12, onChange: (v) => edit((cc) => (cc.pageCount = v)) }), '表紙は別に1枚付きます'),
     field('追加の指示(任意)', textArea(c.notes, (v) => edit((cc) => (cc.notes = v)), 2, '例: 1ページは予測変換ネタにする / 語尾はやさしく')),
-    keyRow('Claude の APIキー', settings.anthropicKeySource, (k) => capi.setAnthropicKey(k), 'platform.claude.com の API Keys で発行。テーマと指示の文章だけを Claude API に送ります(画像は送りません)。'),
     button('Claude で作る', () => void generate(), { class: 'primary big', id: 'cr-generate', disabled: !canGenerate }),
     busy ? h('div', { class: 'note', id: 'cr-progress' }, busy) : null,
     h('h3', null, '2 画像'),
-    h('p', { class: 'hint' }, '無料で商用利用できる素材サイト(Pexels・Pixabay)から探します。ウェブ上の他人の画像は使いません。キーはどちらか一方でも使えます(イラストは Pixabay のみ)。'),
-    keyRow('Pexels の APIキー', settings.pexelsKeySource, (k) => capi.setStockKey('pexels', k), h('span', null, h('a', { href: 'https://www.pexels.com/api/', target: '_blank', rel: 'noreferrer' }, 'pexels.com/api'), ' で無料登録して発行')),
-    keyRow('Pixabay の APIキー', settings.pixabayKeySource, (k) => capi.setStockKey('pixabay', k), h('span', null, h('a', { href: 'https://pixabay.com/api/docs/', target: '_blank', rel: 'noreferrer' }, 'pixabay.com/api/docs'), ' でログインすると表示されます')),
-    button('画像の無い枠に、画像を探して入れる', () => void fill(), { class: 'big', disabled: !hasStock || !!busy }),
+    field('画像の方針', select(c.imagePolicy, POLICY_OPTIONS, (v) => change((cc) => (cc.imagePolicy = v))), 'Claude で作るときと、下のボタンで入れるときに使います。枠ごとに「画像を選ぶ」でも変えられます(ウェブ上の他人の画像は使いません)'),
+    button(`画像の無い枠に入れる(${IMAGE_POLICY_LABELS[policy]})`, () => void fill(), { class: 'big', disabled: !canFill || !!busy || policy === 'none' }),
     notes.length ? h('div', { class: 'note' }, notes.map((n) => h('div', null, n))) : null,
     h('h3', null, '3 見た目'),
     field(
@@ -376,13 +306,13 @@ function sidebar(): HTMLElement {
       h(
         'div',
         null,
-        select<BackgroundPreset>(st.background, [['lavender', 'ラベンダー'], ['pink-water', 'ピンクの水面'], ['mint', 'ミント'], ['cream', 'クリーム']], (v) => edit((cc) => (cc.style.background = v))),
-        imageSlot(st.backgroundImage, null, (im) => change((cc) => (cc.style.backgroundImage = im))),
+        select<BackgroundPreset>(st.background, BACKGROUND_OPTIONS, (v) => edit((cc) => (cc.style.background = v))),
+        imageSlot(st.backgroundImage, null, (im) => change((cc) => (cc.style.backgroundImage = im)), { category: '背景', aspectRatio: '9:16', title: 'ページ背景画像' }),
       ),
       '背景の画像を入れると、色より優先します',
     ),
-    field('下のキャラクター(左)', imageSlot(st.leftCharacter, null, (im) => change((cc) => (cc.style.leftCharacter = im))), '毎ページの下に出します。背景が透明な PNG がきれいです'),
-    field('下のキャラクター(右)', imageSlot(st.rightCharacter, null, (im) => change((cc) => (cc.style.rightCharacter = im)))),
+    field('下のキャラクター(左)', imageSlot(st.leftCharacter, null, (im) => change((cc) => (cc.style.leftCharacter = im)), { category: 'キャラクター', transparent: true, title: '下のキャラクター(左)' }), '毎ページの下に出します。背景が透明な PNG がきれいです'),
+    field('下のキャラクター(右)', imageSlot(st.rightCharacter, null, (im) => change((cc) => (cc.style.rightCharacter = im)), { category: 'キャラクター', transparent: true, title: '下のキャラクター(右)' })),
     h('h3', null, '4 本文と書き出し'),
     field('本文', textArea(c.caption, (v) => edit((cc) => (cc.caption = v)), 3, 'みんなはどれくらい当てはまった?👀')),
     field('ハッシュタグ', tags),
@@ -394,6 +324,7 @@ function sidebar(): HTMLElement {
           'div',
           { class: 'ok-box' },
           h('div', null, `${lastExport.files.length - 1} 枚の PNG と本文を書き出しました。`),
+          lastExport.libraryPath ? h('div', { class: 'hint' }, `素材ライブラリのフォルダにも置きました: ${lastExport.libraryPath}`) : null,
           h('div', { class: 'row gap wrap' }, h('a', { href: `/api/carousels/${c.id}/files/exports/${encodeURIComponent(lastExport.zip)}?download=1` }, 'ZIP をダウンロード'), button('フォルダを開く', () => void capi.reveal(c.id), { class: 'small' })),
         )
       : null,
@@ -457,76 +388,6 @@ async function exportAll() {
     busy = '';
     rebuild();
   }
-}
-
-// ---------- 素材サイトの検索 ----------
-
-function openSearch(initial: ImageQuery, set: (im: CarouselImage) => void) {
-  const providers: Provider[] = [];
-  if (settings.pexelsKeySource) providers.push('pexels');
-  if (settings.pixabayKeySource) providers.push('pixabay');
-  if (providers.length === 0) {
-    toast('素材サイト(Pexels・Pixabay)の APIキーを左の「2 画像」で設定してください', 'error');
-    return;
-  }
-  let q: ImageQuery = { ...initial };
-  let provider: Provider = initial.kind === 'illustration' && providers.includes('pixabay') ? 'pixabay' : providers[0]!;
-  const results = h('div', { class: 'stock-grid' });
-  const close = () => overlay.remove();
-  const search = async () => {
-    mount(results, h('p', { class: 'hint' }, '検索中…'));
-    try {
-      const hits = await capi.search(provider, q);
-      mount(
-        results,
-        hits.length
-          ? hits.map((hit) =>
-              h(
-                'button',
-                {
-                  type: 'button',
-                  class: 'stock-hit',
-                  title: `${hit.credit} (${hit.width}×${hit.height})`,
-                  onClick: async () => {
-                    try {
-                      set(await capi.pickStock(c.id, hit));
-                      close();
-                    } catch (e) {
-                      toast((e as Error).message, 'error');
-                    }
-                  },
-                },
-                h('img', { src: `/api/stock/thumb?url=${encodeURIComponent(hit.thumb)}`, loading: 'lazy', alt: '' }),
-              ),
-            )
-          : h('p', { class: 'hint' }, '見つかりませんでした。検索語を変えてみてください(英語のほうが見つかりやすいです)。'),
-      );
-    } catch (e) {
-      mount(results, h('p', { class: 'err' }, (e as Error).message));
-    }
-  };
-  const qIn = textIn(q.q, (v) => (q = { ...q, q: v }), { class: 'grow' });
-  qIn.addEventListener('keydown', (e) => e.key === 'Enter' && void search());
-  const overlay = h(
-    'div',
-    { class: 'cr-overlay', onClick: (e: Event) => e.target === overlay && close() },
-    h(
-      'div',
-      { class: 'cr-dialog' },
-      h(
-        'div',
-        { class: 'row gap' },
-        qIn,
-        select(q.kind, [['photo', '写真'], ['illustration', 'イラスト']], (v) => (q = { ...q, kind: v })),
-        select(provider, providers.map((p) => [p, p === 'pexels' ? 'Pexels' : 'Pixabay'] as [Provider, string]), (v) => (provider = v)),
-        button('検索', () => void search(), { class: 'primary' }),
-        button('閉じる', close),
-      ),
-      results,
-    ),
-  );
-  document.body.appendChild(overlay);
-  void search();
 }
 
 boot().catch((e) => mount(app, h('div', { class: 'fatal' }, `読み込めませんでした: ${(e as Error).message}`)));

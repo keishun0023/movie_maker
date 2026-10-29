@@ -28,14 +28,42 @@ export function carouselFile(id: string, dir: 'images' | 'exports', name: string
   return p;
 }
 
-export async function listCarousels(): Promise<{ id: string; name: string; updatedAt: string; pages: number }[]> {
+export interface CarouselSummary {
+  id: string;
+  name: string;
+  theme: string;
+  status: Carousel['status'];
+  formatId?: string;
+  imagePolicy: Carousel['imagePolicy'];
+  scheduledOn?: string;
+  memo: string;
+  pages: number;
+  /** 表紙の画像(一覧の縮小表示用) */
+  cover?: CarouselImage;
+  updatedAt: string;
+}
+
+export async function listCarousels(): Promise<CarouselSummary[]> {
   await fsp.mkdir(CAROUSELS_DIR, { recursive: true });
-  const out: { id: string; name: string; updatedAt: string; pages: number }[] = [];
+  const out: CarouselSummary[] = [];
   for (const d of await fsp.readdir(CAROUSELS_DIR, { withFileTypes: true })) {
     if (!d.isDirectory()) continue;
     try {
-      const j = JSON.parse(await fsp.readFile(path.join(CAROUSELS_DIR, d.name, 'carousel.json'), 'utf8')) as Carousel;
-      out.push({ id: d.name, name: j.name ?? d.name, updatedAt: j.updatedAt ?? '', pages: j.pages?.length ?? 0 });
+      const j = await loadCarousel(d.name);
+      const cover = j.pages[0]?.kind === 'cover' ? j.pages[0].image : undefined;
+      out.push({
+        id: j.id,
+        name: j.name,
+        theme: j.theme,
+        status: j.status,
+        imagePolicy: j.imagePolicy,
+        memo: j.memo,
+        pages: j.pages.length,
+        updatedAt: j.updatedAt,
+        ...(j.formatId ? { formatId: j.formatId } : {}),
+        ...(j.scheduledOn ? { scheduledOn: j.scheduledOn } : {}),
+        ...(cover ? { cover } : {}),
+      });
     } catch {
       /* 壊れたものは一覧に出さない */
     }
@@ -90,8 +118,8 @@ export async function saveImage(id: string, buf: Buffer, ext: string, meta: Omit
   return { file: `images/${name}`, ...meta };
 }
 
-/** ブラウザから送られた画像(x-filename ヘッダー付き)を保存する */
-export async function uploadImage(id: string, req: IncomingMessage): Promise<CarouselImage> {
+/** ブラウザから送られた画像(x-filename ヘッダー付き)を読む */
+export async function readUpload(req: IncomingMessage): Promise<{ buf: Buffer; name: string; ext: string }> {
   const name = path.basename(decodeURIComponent(String(req.headers['x-filename'] ?? 'image')));
   const chunks: Buffer[] = [];
   let size = 0;
@@ -101,5 +129,5 @@ export async function uploadImage(id: string, req: IncomingMessage): Promise<Car
     chunks.push(c as Buffer);
   }
   if (size === 0) throw new HttpError(400, '空のファイルです');
-  return saveImage(id, Buffer.concat(chunks), path.extname(name), { source: 'upload' });
+  return { buf: Buffer.concat(chunks), name, ext: path.extname(name) };
 }

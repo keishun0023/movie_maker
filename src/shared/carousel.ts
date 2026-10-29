@@ -5,7 +5,9 @@
 export interface CarouselImage {
   /** カルーセルのフォルダからの相対パス(images/xxx.jpg) */
   file: string;
-  source: 'pixabay' | 'pexels' | 'upload';
+  source: 'pixabay' | 'pexels' | 'upload' | 'ai' | 'library';
+  /** 素材ライブラリから入れた(または登録した)ときの素材ID */
+  libraryId?: string;
   /** 撮影者・作者(素材サイトの画像のとき) */
   credit?: string;
   /** 素材サイトのページ */
@@ -69,9 +71,75 @@ export interface CarouselStyle {
   rightCharacter?: CarouselImage;
 }
 
+/** 企画の進み具合 */
+export type CarouselStatus = 'idea' | 'todo' | 'done' | 'fix' | 'posted';
+
+export const STATUS_LABELS: Record<CarouselStatus, string> = { idea: 'アイデア', todo: '作成する', done: '作成済み', fix: '修正する', posted: '投稿済み' };
+
+/** 画像をどう用意するか */
+export type ImagePolicy = 'stock-photo' | 'stock-illustration' | 'ai-anime' | 'ai-photo' | 'library' | 'none';
+
+export const IMAGE_POLICY_LABELS: Record<ImagePolicy, string> = {
+  'stock-photo': '素材サイトの写真',
+  'stock-illustration': '素材サイトのイラスト',
+  'ai-anime': 'AI で作る(アニメ調)',
+  'ai-photo': 'AI で作る(写真風)',
+  library: '素材ライブラリから選ぶ',
+  none: '画像なし',
+};
+
+/** 素材ライブラリの分類(ライブラリのフォルダの中のサブフォルダ名) */
+export const LIBRARY_CATEGORIES = ['キャラクター', 'イラスト', '写真', '商品', '背景', 'その他'] as const;
+export type LibraryCategory = (typeof LIBRARY_CATEGORIES)[number];
+
+/** 素材ライブラリの1つの画像 */
+export interface LibraryItem {
+  id: string;
+  name: string;
+  category: LibraryCategory;
+  /** ライブラリのフォルダからの相対パス */
+  file: string;
+  tags: string[];
+  source: CarouselImage['source'];
+  credit?: string;
+  pageUrl?: string;
+  /** AI で作ったときの指示文 */
+  prompt?: string;
+  width?: number;
+  height?: number;
+  hash: string;
+  addedAt: string;
+}
+
+/** 企画の型(フォーマット)。選ぶと見た目・枚数・書き方・画像の方針がまとめて入る */
+export interface CarouselFormat {
+  id: string;
+  name: string;
+  heads: CarouselStyle['heads'];
+  leftWord: string;
+  rightWord: string;
+  background: BackgroundPreset;
+  /** 素材ライブラリの素材ID */
+  backgroundImageId?: string;
+  leftCharacterId?: string;
+  rightCharacterId?: string;
+  pageCount: number;
+  /** Claude への書き方の指示 */
+  instructions: string;
+  imagePolicy: ImagePolicy;
+}
+
 export interface Carousel {
   id: string;
   name: string;
+  status: CarouselStatus;
+  /** 使ったフォーマット */
+  formatId?: string;
+  imagePolicy: ImagePolicy;
+  /** 投稿予定日(YYYY-MM-DD) */
+  scheduledOn?: string;
+  /** メモ */
+  memo: string;
   /** 作りたい投稿のテーマ(例: ニキビを消す習慣) */
   theme: string;
   /** 比較ページの枚数(表紙は別) */
@@ -99,7 +167,22 @@ export const DEFAULT_CAROUSEL_STYLE: CarouselStyle = {
 
 export function createCarousel(id: string, name: string): Carousel {
   const now = new Date().toISOString();
-  return { id, name, theme: '', pageCount: 5, notes: '', style: { ...DEFAULT_CAROUSEL_STYLE }, pages: [], caption: '', hashtags: [], createdAt: now, updatedAt: now };
+  return {
+    id,
+    name,
+    status: 'idea',
+    imagePolicy: 'stock-photo',
+    memo: '',
+    theme: '',
+    pageCount: 5,
+    notes: '',
+    style: { ...DEFAULT_CAROUSEL_STYLE },
+    pages: [],
+    caption: '',
+    hashtags: [],
+    createdAt: now,
+    updatedAt: now,
+  };
 }
 
 const str = (v: unknown, max: number): string => (typeof v === 'string' ? v : v == null ? '' : String(v)).replace(/\r\n?/g, '\n').trim().slice(0, max);
@@ -167,7 +250,7 @@ export function creditLines(c: Carousel): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const im of carouselImages(c)) {
-    if (im.source === 'upload' || !im.credit) continue;
+    if ((im.source !== 'pixabay' && im.source !== 'pexels') || !im.credit) continue;
     const line = `${im.credit} (${im.source === 'pixabay' ? 'Pixabay' : 'Pexels'})`;
     if (!seen.has(line)) {
       seen.add(line);
@@ -175,4 +258,38 @@ export function creditLines(c: Carousel): string[] {
     }
   }
   return out;
+}
+
+/** フォーマットの見た目・枚数・画像の方針を企画に入れる(画像はライブラリから引いた CarouselImage を渡す) */
+export function applyFormat(c: Carousel, f: CarouselFormat, images: { backgroundImage?: CarouselImage; leftCharacter?: CarouselImage; rightCharacter?: CarouselImage }): Carousel {
+  return {
+    ...c,
+    formatId: f.id,
+    pageCount: f.pageCount,
+    imagePolicy: f.imagePolicy,
+    style: {
+      heads: f.heads,
+      leftWord: f.leftWord,
+      rightWord: f.rightWord,
+      background: f.background,
+      backgroundImage: images.backgroundImage,
+      leftCharacter: images.leftCharacter,
+      rightCharacter: images.rightCharacter,
+    },
+  };
+}
+
+/** 素材ライブラリの検索(名前・タグ・分類に、言葉がいくつ含まれるかで並べる) */
+export function searchLibrary(items: LibraryItem[], query: string, category?: LibraryCategory | ''): LibraryItem[] {
+  const words = query.toLowerCase().split(/[\s,、]+/).filter(Boolean);
+  const pool = category ? items.filter((x) => x.category === category) : items;
+  if (words.length === 0) return [...pool].sort((a, b) => (a.addedAt < b.addedAt ? 1 : -1));
+  return pool
+    .map((x) => {
+      const hay = [x.name, x.category, ...x.tags, x.prompt ?? ''].join(' ').toLowerCase();
+      return { x, score: words.filter((w) => hay.includes(w)).length };
+    })
+    .filter((r) => r.score > 0)
+    .sort((a, b) => b.score - a.score || (a.x.addedAt < b.x.addedAt ? 1 : -1))
+    .map((r) => r.x);
 }

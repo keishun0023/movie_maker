@@ -1,10 +1,11 @@
 // 写真投稿の中身を Claude に考えてもらい、各ページの画像を素材サイトから探して入れる。
 // Claude に送るのはテーマと指示の文章だけ(画像は送らない)。
 import type Anthropic from '@anthropic-ai/sdk';
-import { pagesFromDraft, type Carousel, type CarouselImage, type CarouselPage, type ImageQuery } from '../../shared/carousel.js';
+import { pagesFromDraft, searchLibrary, type Carousel, type CarouselImage, type CarouselPage, type ImagePolicy, type ImageQuery, type LibraryCategory } from '../../shared/carousel.js';
 import { AI_MODEL, friendlyError } from '../ai/assign.js';
 import { CanceledError } from '../proc.js';
-import { saveImage } from './store.js';
+import { generateAiImage } from './ai.js';
+import { libraryItems, libraryToCarousel, saveAndRegister } from './library.js';
 import { fetchStockImage, providersFor, searchStock } from './stock.js';
 
 const IMAGE_SCHEMA = {
@@ -63,6 +64,21 @@ const SCHEMA = {
   additionalProperties: false,
 } as const;
 
+/** 画像の方針ごとの、image.q の書き方 */
+function imageGuide(policy: ImagePolicy): string {
+  switch (policy) {
+    case 'ai-anime':
+    case 'ai-photo':
+      return `- 画像は AI で${policy === 'ai-anime' ? '日本のアニメ調のイラスト' : '写真風の画像'}として作る。image.q には、作る画像の内容を英語で具体的に書く(人物の見た目・表情・しぐさ・持ち物・構図。例: "a girl with messy hair touching a pimple on her cheek in front of a mirror, worried face")。画風の指定は書かない(アプリが足す)。文字は入れない。人物は実在の人に似せない。kind は ${policy === 'ai-anime' ? 'illustration' : 'photo'}。`;
+    case 'library':
+      return '- 画像は利用者の素材ライブラリから選ぶ。image.q には、素材を探すための日本語の言葉を2〜4個、空白で区切って書く(例: "泣き顔 メガネ", "スマホ 手")。';
+    case 'none':
+      return '- 画像は使わないが、image.q には後で探すための英語の検索語を書いておく。';
+    default:
+      return `- 画像の検索語(image.q)は、Pixabay・Pexels のような無料素材サイトで見つかりやすい英語にする(例: "woman smooth skin face closeup", "messy desk cosmetics", "cartoon smartphone hand")。${policy === 'stock-illustration' ? 'kind は illustration にする。' : '顔の比較などの写真は photo、物や手のしぐさなどは illustration も可。'}`;
+  }
+}
+
 function systemPrompt(c: Carousel): string {
   const bad = c.style.heads === 'words' ? c.style.leftWord : '✖(ダメな例)';
   const good = c.style.heads === 'words' ? c.style.rightWord : '〇(良い例)';
@@ -82,8 +98,8 @@ function systemPrompt(c: Carousel): string {
 - 絵文字はところどころ控えめに。
 - けなす対象は習慣・行動・持ち物・やり方にする。生まれつきの顔立ち・体型・肌の色・年齢などをばかにしない。
 - 医学的な効果を言い切らない(「治る」「必ず」などは使わない)。実在の人物・商品名は出さない。
-- 画像の検索語(image.q)は、Pixabay・Pexels のような無料素材サイトで見つかりやすい英語にする(例: "woman smooth skin face closeup", "messy desk cosmetics", "cartoon smartphone hand")。顔の比較などの写真は photo、物や手のしぐさなどは illustration も可。
-- 表紙の画像は、テーマに合う人物の顔のアップなど、目を引く縦長の写真にする。
+${imageGuide(c.imagePolicy ?? 'stock-photo')}
+- 表紙の画像は、テーマに合う人物の顔のアップなど、目を引く縦長の画像にする。
 - 本文(caption)は1〜3行で、最後はコメントしたくなる問いかけにする(例: 「みんなはどれくらい当てはまった?👀」)。
 - 利用者の追加の指示があれば従う。ただし上の禁止事項は守る。`;
 }
@@ -93,6 +109,9 @@ export interface CarouselJobOptions {
   apiKey: string;
   signal: AbortSignal;
   progress: (v: number, m?: string) => void;
+  /** フォーマットの書き方の指示 */
+  formatInstructions?: string;
+  geminiKey?: string | null;
 }
 
 /** Claude で投稿の中身を書き、画像を探して入れる */
@@ -106,6 +125,7 @@ export async function generateCarousel(opt: CarouselJobOptions): Promise<{ pages
   const client = new AnthropicCls({ apiKey: opt.apiKey });
   const user =
     `# テーマ\n${c.theme.trim()}\n\n# 比較ページの枚数\n${n} 枚(表紙は別)\n` +
+    (opt.formatInstructions?.trim() ? `\n# この型の書き方\n${opt.formatInstructions.trim()}\n` : '') +
     (c.notes.trim() ? `\n# 追加の指示\n${c.notes.trim()}\n` : '') +
     `\n表紙と ${n} 枚の比較ページ、本文、ハッシュタグを作ってください。`;
   progress(0.03, 'Claude が投稿の中身を考えています');
@@ -149,7 +169,7 @@ export async function generateCarousel(opt: CarouselJobOptions): Promise<{ pages
   const notes = [`Claude (${msg.model}) で表紙と ${out.pages.length - 1} 枚の比較ページを作りました。入力 ${msg.usage.input_tokens} / 出力 ${msg.usage.output_tokens} トークン。`];
   if (msg.content.some((b) => b.type === 'fallback')) notes.push(`安全判定により別モデル(${msg.model})で処理しました。`);
 
-  const filled = await fillImages({ ...c, pages: out.pages }, signal, (v, m) => progress(0.42 + 0.58 * v, m));
+  const filled = await fillImages({ ...c, pages: out.pages }, signal, (v, m) => progress(0.42 + 0.58 * v, m), { geminiKey: opt.geminiKey });
   for (const f of filled.images) {
     const p = out.pages.find((x) => x.id === f.pageId);
     if (!p) continue;
@@ -168,35 +188,76 @@ export interface FilledImage {
   image: CarouselImage;
 }
 
-/** 画像の入っていない枠に、素材サイトで検索した画像を入れる(同じ画像は2回使わない) */
-export async function fillImages(c: Carousel, signal: AbortSignal, progress: (v: number, m?: string) => void): Promise<{ images: FilledImage[]; notes: string[] }> {
-  const slots: { pageId: string; slot: ImageSlot; query: ImageQuery }[] = [];
+export interface FillOptions {
+  geminiKey?: string | null;
+}
+
+interface Slot {
+  pageId: string;
+  slot: ImageSlot;
+  query: ImageQuery;
+  /** ライブラリに登録するときのタグ(お題・言葉) */
+  tags: string[];
+}
+
+/**
+ * 画像の入っていない枠に、画像の方針どおりに画像を入れる(素材サイトで探す / AI で作る / ライブラリから選ぶ)。
+ * 同じ画像は2回使わない。素材サイトと AI の画像は素材ライブラリにも登録する。
+ */
+export async function fillImages(c: Carousel, signal: AbortSignal, progress: (v: number, m?: string) => void, opt: FillOptions = {}): Promise<{ images: FilledImage[]; notes: string[] }> {
+  const policy: ImagePolicy = c.imagePolicy ?? 'stock-photo';
+  const slots: Slot[] = [];
   for (const p of c.pages) {
     if (p.kind === 'cover') {
-      if (!p.image) slots.push({ pageId: p.id, slot: 'cover', query: p.query });
+      if (!p.image) slots.push({ pageId: p.id, slot: 'cover', query: p.query, tags: [c.theme, p.title].filter(Boolean) });
     } else {
-      if (!p.left.image) slots.push({ pageId: p.id, slot: 'left', query: p.left.query });
-      if (!p.right.image) slots.push({ pageId: p.id, slot: 'right', query: p.right.query });
+      if (!p.left.image) slots.push({ pageId: p.id, slot: 'left', query: p.left.query, tags: [p.title, p.left.text].filter(Boolean) });
+      if (!p.right.image) slots.push({ pageId: p.id, slot: 'right', query: p.right.query, tags: [p.title, p.right.text].filter(Boolean) });
     }
   }
   if (slots.length === 0) return { images: [], notes: [] };
-  if (providersFor('photo').length === 0) {
-    return { images: [], notes: ['素材サイト(Pixabay・Pexels)の APIキーが未設定のため、画像は入れていません。キーを設定して「画像を探して入れる」を押すか、手元の画像を入れてください。'] };
+  if (policy === 'none') return { images: [], notes: ['画像の方針が「画像なし」なので、画像は入れていません。'] };
+  const ai = policy === 'ai-anime' || policy === 'ai-photo';
+  if (ai && !opt.geminiKey) return { images: [], notes: ['Gemini の APIキーが未設定のため、AI の画像は作っていません。設定画面でキーを入れてください。'] };
+  if ((policy === 'stock-photo' || policy === 'stock-illustration') && providersFor('photo').length === 0) {
+    return { images: [], notes: ['素材サイト(Pixabay・Pexels)の APIキーが未設定のため、画像は入れていません。キーを設定して「画像を入れる」を押すか、手元の画像を入れてください。'] };
   }
-  // すでに使っている素材サイトの画像は使わない
+  const library = policy === 'library' ? await libraryItems() : [];
+  // すでに使っている画像は使わない
   const used = new Set<string>();
-  for (const p of c.pages) for (const im of p.kind === 'cover' ? [p.image] : [p.left.image, p.right.image]) if (im?.pageUrl) used.add(im.pageUrl);
+  for (const p of c.pages) {
+    for (const im of p.kind === 'cover' ? [p.image] : [p.left.image, p.right.image]) {
+      if (im?.pageUrl) used.add(im.pageUrl);
+      if (im?.libraryId) used.add(im.libraryId);
+    }
+  }
   const images: FilledImage[] = [];
   const misses: string[] = [];
   const errors = new Set<string>();
   let done = 0;
   let next = 0;
+  const verb = ai ? '作っています' : '探しています';
   const worker = async () => {
     while (next < slots.length) {
       const s = slots[next++]!;
       if (signal.aborted) throw new CanceledError();
       try {
-        const image = await findImage(c.id, s.query, used, signal);
+        let image: CarouselImage | null = null;
+        if (ai) {
+          const style = policy === 'ai-anime' ? 'anime' : 'photo';
+          const r = await generateAiImage({ apiKey: opt.geminiKey!, subject: s.query.q, style, aspectRatio: s.slot === 'cover' ? '9:16' : '3:4', signal });
+          const category: LibraryCategory = style === 'anime' ? 'イラスト' : '写真';
+          image = await saveAndRegister(c.id, r.buf, r.ext, { name: s.tags.join(' ').slice(0, 30) || 'AI画像', category, tags: s.tags, source: 'ai', prompt: r.prompt });
+        } else if (policy === 'library') {
+          const pick = searchLibrary(library, s.query.q).find((x) => !used.has(x.id));
+          if (pick) {
+            used.add(pick.id);
+            image = await libraryToCarousel(c.id, pick.id);
+          }
+        } else {
+          const kind = policy === 'stock-illustration' ? 'illustration' : s.query.kind;
+          image = await findImage(c.id, { ...s.query, kind }, used, signal, s.tags);
+        }
         if (image) images.push({ pageId: s.pageId, slot: s.slot, image });
         else misses.push(s.query.q);
       } catch (e) {
@@ -204,17 +265,20 @@ export async function fillImages(c: Carousel, signal: AbortSignal, progress: (v:
         errors.add(e instanceof Error ? e.message : String(e));
         misses.push(s.query.q);
       }
-      progress(++done / slots.length, `画像を探しています (${done}/${slots.length})`);
+      progress(++done / slots.length, `画像を${verb} (${done}/${slots.length})`);
     }
   };
-  await Promise.all(Array.from({ length: Math.min(3, slots.length) }, worker));
-  const notes = [`素材サイトから ${images.length} 枚の画像を入れました。`];
-  if (misses.length) notes.push(`${misses.length} か所は合う画像が見つかりませんでした(${misses.slice(0, 4).join(' / ')}${misses.length > 4 ? ' ほか' : ''})。検索語を変えるか、手元の画像を入れてください。`);
+  // AI の生成は重いので2つずつ
+  await Promise.all(Array.from({ length: Math.min(ai ? 2 : 3, slots.length) }, worker));
+  const from = ai ? 'AI で' : policy === 'library' ? '素材ライブラリから' : '素材サイトから';
+  const notes = [`${from} ${images.length} 枚の画像を入れました。`];
+  if (ai && images.length) notes.push('AI で作った画像です。実写に見える画像を投稿するときは、TikTok の「AI 生成」のラベルを付けてください。');
+  if (misses.length) notes.push(`${misses.length} か所は画像を入れられませんでした(${misses.slice(0, 4).join(' / ')}${misses.length > 4 ? ' ほか' : ''})。言葉を変えるか、手元の画像を入れてください。`);
   for (const e of errors) notes.push(e);
   return { images, notes };
 }
 
-async function findImage(id: string, q: ImageQuery, used: Set<string>, signal: AbortSignal): Promise<CarouselImage | null> {
+async function findImage(id: string, q: ImageQuery, used: Set<string>, signal: AbortSignal, tags: string[] = []): Promise<CarouselImage | null> {
   // 見つからなければ、検索語を短くしてもう一度
   const words = q.q.trim().split(/\s+/);
   const tries = [q.q, words.length > 3 ? words.slice(0, 3).join(' ') : null].filter((x): x is string => !!x);
@@ -226,7 +290,14 @@ async function findImage(id: string, q: ImageQuery, used: Set<string>, signal: A
       if (!pick) continue;
       used.add(pick.pageUrl);
       const img = await fetchStockImage(pick.full, signal);
-      return saveImage(id, img.buf, img.ext, { source: pick.provider, credit: pick.credit, pageUrl: pick.pageUrl });
+      return saveAndRegister(id, img.buf, img.ext, {
+        name: tags.join(' ').slice(0, 30) || text,
+        category: q.kind === 'illustration' ? 'イラスト' : '写真',
+        tags: [...tags, ...text.split(/\s+/)],
+        source: pick.provider,
+        credit: pick.credit,
+        pageUrl: pick.pageUrl,
+      });
     }
   }
   return null;
