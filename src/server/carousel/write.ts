@@ -173,7 +173,7 @@ export async function generateCarousel(opt: CarouselJobOptions): Promise<{ pages
   for (const f of filled.images) {
     const p = out.pages.find((x) => x.id === f.pageId);
     if (!p) continue;
-    if (p.kind === 'cover') p.image = f.image;
+    if (p.kind !== 'compare') p.image = f.image;
     else if (f.slot === 'left') p.left.image = f.image;
     else if (f.slot === 'right') p.right.image = f.image;
   }
@@ -198,6 +198,7 @@ interface Slot {
   query: ImageQuery;
   /** ライブラリに登録するときのタグ(お題・言葉) */
   tags: string[];
+  aspect: '3:4' | '9:16' | '1:1';
 }
 
 /**
@@ -208,11 +209,12 @@ export async function fillImages(c: Carousel, signal: AbortSignal, progress: (v:
   const policy: ImagePolicy = c.imagePolicy ?? 'stock-photo';
   const slots: Slot[] = [];
   for (const p of c.pages) {
-    if (p.kind === 'cover') {
-      if (!p.image) slots.push({ pageId: p.id, slot: 'cover', query: p.query, tags: [c.theme, p.title].filter(Boolean) });
+    if (p.kind !== 'compare') {
+      // 表紙・商品ページの1枚の画像(slot は 'cover' で表す)
+      if (!p.image) slots.push({ pageId: p.id, slot: 'cover', query: p.query, tags: [c.theme, p.title].filter(Boolean), aspect: p.kind === 'product' ? '1:1' : '9:16' });
     } else {
-      if (!p.left.image) slots.push({ pageId: p.id, slot: 'left', query: p.left.query, tags: [p.title, p.left.text].filter(Boolean) });
-      if (!p.right.image) slots.push({ pageId: p.id, slot: 'right', query: p.right.query, tags: [p.title, p.right.text].filter(Boolean) });
+      if (!p.left.image) slots.push({ pageId: p.id, slot: 'left', query: p.left.query, tags: [p.title, p.left.text].filter(Boolean), aspect: '3:4' });
+      if (!p.right.image) slots.push({ pageId: p.id, slot: 'right', query: p.right.query, tags: [p.title, p.right.text].filter(Boolean), aspect: '3:4' });
     }
   }
   if (slots.length === 0) return { images: [], notes: [] };
@@ -226,7 +228,7 @@ export async function fillImages(c: Carousel, signal: AbortSignal, progress: (v:
   // すでに使っている画像は使わない
   const used = new Set<string>();
   for (const p of c.pages) {
-    for (const im of p.kind === 'cover' ? [p.image] : [p.left.image, p.right.image]) {
+    for (const im of p.kind !== 'compare' ? [p.image] : [p.left.image, p.right.image]) {
       if (im?.pageUrl) used.add(im.pageUrl);
       if (im?.libraryId) used.add(im.libraryId);
     }
@@ -245,7 +247,7 @@ export async function fillImages(c: Carousel, signal: AbortSignal, progress: (v:
         let image: CarouselImage | null = null;
         if (ai) {
           const style = policy === 'ai-anime' ? 'anime' : 'photo';
-          const r = await generateAiImage({ apiKey: opt.geminiKey!, subject: s.query.q, style, aspectRatio: s.slot === 'cover' ? '9:16' : '3:4', signal });
+          const r = await generateAiImage({ apiKey: opt.geminiKey!, subject: s.query.q, style, aspectRatio: s.aspect, signal });
           const category: LibraryCategory = style === 'anime' ? 'イラスト' : '写真';
           image = await saveAndRegister(c.id, r.buf, r.ext, { name: s.tags.join(' ').slice(0, 30) || 'AI画像', category, tags: s.tags, source: 'ai', prompt: r.prompt });
         } else if (policy === 'library') {

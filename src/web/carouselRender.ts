@@ -1,5 +1,5 @@
 // 写真投稿のページを Canvas に描く。プレビューも書き出し(1080×1920 の PNG)もこの関数だけで描く。
-import { CAROUSEL_H, CAROUSEL_W, type BackgroundPreset, type Carousel, type CarouselImage, type ComparePage, type CompareSide, type CoverPage } from '../shared/carousel.js';
+import { CAROUSEL_H, CAROUSEL_W, type BackgroundPreset, type Carousel, type CarouselImage, type ComparePage, type CompareSide, type CoverPage, type ProductPage } from '../shared/carousel.js';
 import { wrapText } from '../shared/jatext.js';
 import { fontAlias } from '../shared/captionRender.js';
 
@@ -37,7 +37,7 @@ function img(carouselId: string, im: CarouselImage | undefined): HTMLImageElemen
 export async function waitImages(c: Carousel): Promise<void> {
   const list: CarouselImage[] = [];
   for (const p of c.pages) {
-    if (p.kind === 'cover') {
+    if (p.kind !== 'compare') {
       if (p.image) list.push(p.image);
     } else for (const s of [p.left, p.right]) if (s.image) list.push(s.image);
   }
@@ -95,6 +95,7 @@ function rng(seed: number) {
 const GRADIENTS: Record<BackgroundPreset, [string, string, string]> = {
   lavender: ['#d8cff2', '#f1d4ea', '#e6c3df'],
   'pink-water': ['#c79fa8', '#d9b6bb', '#c8a0a8'],
+  pink: ['#fff4f5', '#ffd6db', '#ffb9c2'],
   mint: ['#d4efe6', '#eef7e4', '#d9efe8'],
   cream: ['#f6eee2', '#f6e0d6', '#efd6cc'],
 };
@@ -161,7 +162,7 @@ function drawBackground(ctx: Ctx, c: Carousel) {
     return;
   }
   const [a, b, d] = GRADIENTS[c.style.background] ?? GRADIENTS.lavender;
-  const g = ctx.createLinearGradient(0, 0, 0, H);
+  const g = c.style.background === 'pink' ? ctx.createLinearGradient(0, 0, W, 0) : ctx.createLinearGradient(0, 0, 0, H);
   g.addColorStop(0, a);
   g.addColorStop(0.55, b);
   g.addColorStop(1, d);
@@ -244,11 +245,16 @@ function drawCover(ctx: Ctx, c: Carousel, p: CoverPage) {
     const { lines, size } = fitLines(ctx, `＼${p.kicker}／`, W - 140, 52, 32, 1, (s) => textFont(s));
     ctx.save();
     ctx.font = textFont(size);
+    // 明るい写真でも読めるよう、うすい黒の帯を敷く
+    const w = ctx.measureText(lines[0] ?? '').width + 56;
+    ctx.fillStyle = 'rgba(0,0,0,0.38)';
+    roundRect(ctx, W / 2 - w / 2, y - 6, w, size * 1.22 + 12, (size * 1.22 + 12) / 2);
+    ctx.fill();
     ctx.fillStyle = '#ffffff';
     ctx.shadowColor = 'rgba(0,0,0,0.55)';
     ctx.shadowBlur = 10;
     ctx.shadowOffsetY = 2;
-    y = drawLines(ctx, lines, W / 2, y, size) + 14;
+    y = drawLines(ctx, lines, W / 2, y, size) + 20;
     ctx.restore();
   }
   const bottom = textBox(ctx, p.title || 'タイトル', W / 2, y, { size: 74, minSize: 44, maxWidth: W - 120, color: '#111111', box: '#ffffff', radius: 14, padY: 16 });
@@ -360,7 +366,7 @@ function drawCompare(ctx: Ctx, c: Carousel, p: ComparePage) {
     drawLines(ctx, tl.lines, W / 2, y + 18 + 40 * 1.3, tl.size, 1.25);
     y += h + 18;
   } else {
-    y = textBox(ctx, p.title || 'お題', W / 2, y, { size: 80, minSize: 46, maxWidth: W - 260, color: '#111111', box: '#ffffff', radius: 16, maxLines: 2 }) + 16;
+    y = textBox(ctx, p.title || 'お題', W / 2, y, { size: 80, minSize: 46, maxWidth: W - 120, color: '#111111', box: '#ffffff', radius: 16, maxLines: 2 }) + 16;
   }
   if (p.subtitle) y = textBox(ctx, p.subtitle, W / 2, y, { size: 46, minSize: 30, maxWidth: W - 140, color: '#111111', box: 'rgba(255,255,255,0.95)', padY: 10, radius: 16, maxLines: 2 }) + 12;
 
@@ -371,7 +377,8 @@ function drawCompare(ctx: Ctx, c: Carousel, p: ComparePage) {
   const colW = panelW / 2;
   const hasChars = !!(c.style.leftCharacter || c.style.rightCharacter);
   const charH = 420;
-  const charBottom = CAROUSEL_H - 290;
+  // キャラクターは下の端に寄せて(TikTok の本文が重なるあたり)、画像の場所を広くとる
+  const charBottom = CAROUSEL_H - 70;
   const charTop = charBottom - charH;
   const bottom = hasChars ? charTop + charH * 0.42 : CAROUSEL_H - 360;
   const contentEnd = (hasChars ? charTop : bottom) - 24;
@@ -397,7 +404,19 @@ function drawCompare(ctx: Ctx, c: Carousel, p: ComparePage) {
     for (const [i, word] of [c.style.leftWord, c.style.rightWord].entries()) {
       const t = fitLines(ctx, word, colW - 30, 104, 50, 1, headFont);
       ctx.font = headFont(t.size);
-      ctx.fillStyle = '#111111';
+      const color = (i === 0 ? c.style.leftColor : c.style.rightColor) || '#111111';
+      if (color !== '#111111') {
+        // 色付きの見出しは、白いふちを付けて背景から浮かせる
+        ctx.save();
+        ctx.lineJoin = 'round';
+        ctx.lineWidth = 14;
+        ctx.strokeStyle = '#ffffff';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        t.lines.forEach((l, k) => ctx.strokeText(l, panelX + colW * i + colW / 2, headY - t.size * 0.6 + t.size * 1.2 * (k + 0.5)));
+        ctx.restore();
+      }
+      ctx.fillStyle = color;
       drawLines(ctx, t.lines, panelX + colW * i + colW / 2, headY - t.size * 0.6, t.size, 1.2);
     }
   }
@@ -418,6 +437,60 @@ function drawCompare(ctx: Ctx, c: Carousel, p: ComparePage) {
   });
 }
 
+/** 商品ページ: 見出し・紹介文・商品の画像・値段(打ち消し線と赤字の一言) */
+function drawProduct(ctx: Ctx, c: Carousel, p: ProductPage) {
+  const W = CAROUSEL_W;
+  drawBackground(ctx, c);
+  // 見出し(下線つき)
+  const t = fitLines(ctx, p.title || '見出し', W - 200, 76, 44, 2, (s) => textFont(s));
+  ctx.font = textFont(t.size);
+  ctx.fillStyle = '#111111';
+  let y = drawLines(ctx, t.lines, W / 2, 300, t.size, 1.25) + 18;
+  ctx.fillRect(170, y, W - 340, 5);
+  y += 50;
+  // 紹介文(白い角丸の箱)
+  if (p.body.trim()) {
+    const b = fitLines(ctx, p.body, W - 260, 38, 26, 8, (s) => textFont(s, 800));
+    ctx.font = textFont(b.size, 800);
+    const h = b.size * 1.5 * b.lines.length + 50;
+    ctx.fillStyle = 'rgba(255,255,255,0.82)';
+    roundRect(ctx, 110, y, W - 220, h, 26);
+    ctx.fill();
+    ctx.fillStyle = '#222222';
+    drawLines(ctx, b.lines, W / 2, y + 25, b.size, 1.5);
+    y += h + 30;
+  }
+  // 値段の高さを先に測って、残りに商品の画像
+  const priceH = (p.priceBefore ? 80 : 0) + (p.priceAfter ? 160 : 0);
+  const imgBottom = CAROUSEL_H - 300 - priceH;
+  const el = img(c.id, p.image);
+  if (el) drawImageFit(ctx, el, 160, y, W - 320, Math.max(200, imgBottom - y), 'contain');
+  let py = imgBottom + 20;
+  if (p.priceBefore) {
+    const pb = fitLines(ctx, p.priceBefore, W - 200, 56, 34, 1, (s) => textFont(s));
+    ctx.font = textFont(pb.size);
+    ctx.fillStyle = '#222222';
+    drawLines(ctx, pb.lines, W / 2, py, pb.size, 1.2);
+    const w = ctx.measureText(pb.lines[0] ?? '').width;
+    ctx.fillRect(W / 2 - w / 2 - 10, py + pb.size * 0.62, w + 20, 6);
+    py += 80;
+  }
+  if (p.priceAfter) {
+    const pa = fitLines(ctx, p.priceAfter, W - 140, 72, 40, 2, (s) => textFont(s));
+    ctx.font = textFont(pa.size);
+    ctx.save();
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = 12;
+    ctx.strokeStyle = '#ffffff';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    pa.lines.forEach((l, k) => ctx.strokeText(l, W / 2, py + pa.size * 1.2 * (k + 0.5)));
+    ctx.restore();
+    ctx.fillStyle = '#e0303a';
+    drawLines(ctx, pa.lines, W / 2, py, pa.size, 1.2);
+  }
+}
+
 /** 1ページを描く。canvas の大きさは自由(1080×1920 を縮小して描く) */
 export function drawCarouselPage(canvas: HTMLCanvasElement, c: Carousel, index: number) {
   const ctx = canvas.getContext('2d')!;
@@ -426,6 +499,7 @@ export function drawCarouselPage(canvas: HTMLCanvasElement, c: Carousel, index: 
   ctx.setTransform(canvas.width / CAROUSEL_W, 0, 0, canvas.height / CAROUSEL_H, 0, 0);
   ctx.clearRect(0, 0, CAROUSEL_W, CAROUSEL_H);
   if (p?.kind === 'cover') drawCover(ctx, c, p);
+  else if (p?.kind === 'product') drawProduct(ctx, c, p);
   else if (p) drawCompare(ctx, c, p);
   ctx.restore();
 }

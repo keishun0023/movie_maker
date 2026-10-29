@@ -19,6 +19,7 @@
 //   "pages": [ { "label": "", "title": "顔の毛", "subtitle": "",
 //                "left": { "text": "ボーボー", "note": "", "image": "a.jpg" },
 //                "right": { "text": "ツルツル", "note": "", "image": "b.jpg" } } ],
+//   (商品ページ: { "kind": "product", "title": ..., "body": "紹介文", "image": "商品.png", "priceBefore": "打ち消し線の値段", "priceAfter": "赤字の一言" })
 //   "caption": "みんなはどれくらい当てはまった?👀", "hashtags": ["美容", "垢抜け"]
 // }
 import { execSync, spawn } from 'node:child_process';
@@ -119,16 +120,20 @@ try {
   const cov = spec.cover ?? {};
   c.pages = [{ id: 'p0', kind: 'cover', kicker: cov.kicker ?? '', title: cov.title ?? '', query: query(cov), image: await upload(cov.image) }];
   for (const [i, p] of (spec.pages ?? []).entries()) {
+    if (p.kind === 'product') {
+      c.pages.push({ id: `p${i + 1}`, kind: 'product', title: p.title ?? '', body: p.body ?? '', query: query(p), image: await upload(p.image), priceBefore: p.priceBefore ?? '', priceAfter: p.priceAfter ?? '' });
+      continue;
+    }
     c.pages.push({ id: `p${i + 1}`, kind: 'compare', label: p.label ?? '', title: p.title ?? '', subtitle: p.subtitle ?? '', left: await side(p.left), right: await side(p.right) });
   }
   c.caption = spec.caption ?? '';
   c.hashtags = (spec.hashtags ?? []).map((t) => String(t).replace(/^#+/, ''));
   // 検索語だけが書かれた枠は、素材サイトで探して入れる
-  const wanted = c.pages.some((p) => (p.kind === 'cover' ? [p] : [p.left, p.right]).some((x) => !x.image && x.query.q));
+  const wanted = c.pages.some((p) => (p.kind !== 'compare' ? [p] : [p.left, p.right]).some((x) => !x.image && x.query.q));
   if (wanted) {
     // 検索語のない枠は探さない(画像を入れたことにして外す)
     const empty = [];
-    for (const p of c.pages) for (const x of p.kind === 'cover' ? [p] : [p.left, p.right]) if (!x.image && !x.query.q) empty.push(x);
+    for (const p of c.pages) for (const x of p.kind !== 'compare' ? [p] : [p.left, p.right]) if (!x.image && !x.query.q) empty.push(x);
     for (const x of empty) x.image = { file: 'images/none', source: 'upload' };
     let job = await api('POST', `/api/carousels/${c.id}/fill-images`, { carousel: c });
     while (job.status !== 'done' && job.status !== 'failed' && job.status !== 'canceled') {
@@ -139,7 +144,7 @@ try {
     if (job.status !== 'done') throw new Error(`画像を探せませんでした: ${job.error ?? job.status}`);
     for (const f of job.result.images) {
       const p = c.pages.find((x) => x.id === f.pageId);
-      if (p) (p.kind === 'cover' ? p : p[f.slot]).image = f.image;
+      if (p) (p.kind !== 'compare' ? p : p[f.slot]).image = f.image;
     }
     for (const n of job.result.notes) console.error(n);
   }

@@ -79,7 +79,7 @@ test('写真投稿: Claude で中身を書き、素材サイトの画像を重�
     assert.equal(r.pages.length, 3);
     assert.deepEqual(r.hashtags, ['美容', '垢抜け']);
     // 3枚しかない検索結果を、表紙と各ページで重ならないように使う
-    const imgs = r.pages.flatMap((p) => (p.kind === 'cover' ? [p.image] : [p.left.image, p.right.image]));
+    const imgs = r.pages.flatMap((p) => (p.kind !== 'compare' ? [p.image] : [p.left.image, p.right.image]));
     const used = imgs.filter((x) => !!x);
     assert.equal(used.length, 3, JSON.stringify(imgs));
     assert.equal(new Set(used.map((x) => x!.pageUrl)).size, 3);

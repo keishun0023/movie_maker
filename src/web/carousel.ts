@@ -169,11 +169,11 @@ function pageCard(p: CarouselPage, i: number): HTMLElement {
   const head = h(
     'div',
     { class: 'row gap page-head' },
-    h('b', null, p.kind === 'cover' ? '1 表紙' : String(i + 1)),
+    h('b', null, p.kind === 'cover' ? '1 表紙' : p.kind === 'product' ? `${i + 1} 商品` : String(i + 1)),
     h('span', { class: 'spacer' }),
-    p.kind === 'compare' ? button('↑', () => move(-1), { class: 'small', disabled: i <= 1 }) : null,
-    p.kind === 'compare' ? button('↓', () => move(1), { class: 'small', disabled: i >= c.pages.length - 1 }) : null,
-    p.kind === 'compare' ? button('削除', () => change((cc) => cc.pages.splice(i, 1)), { class: 'small danger' }) : null,
+    p.kind !== 'cover' ? button('↑', () => move(-1), { class: 'small', disabled: i <= 1 }) : null,
+    p.kind !== 'cover' ? button('↓', () => move(1), { class: 'small', disabled: i >= c.pages.length - 1 }) : null,
+    p.kind !== 'cover' ? button('削除', () => change((cc) => cc.pages.splice(i, 1)), { class: 'small danger' }) : null,
   );
   let body: HTMLElement;
   if (p.kind === 'cover') {
@@ -184,6 +184,17 @@ function pageCard(p: CarouselPage, i: number): HTMLElement {
       field('上の一言', textIn(p.kicker, (v) => edit((cc) => (pc(cc).kicker = v)), { placeholder: '皮膚科行く前にこれみて‼️' })),
       field('見出し', textIn(p.title, (v) => edit((cc) => (pc(cc).title = v)), { placeholder: 'ニキビがガチで消えた神習慣' })),
       field('表紙の画像', imageSlot(p.image, p.query, (im) => change((cc) => (pc(cc).image = im)), { onQuery: (q) => edit((cc) => (pc(cc).query = q)), tags: [c.theme, p.title].filter(Boolean), aspectRatio: '9:16', title: '表紙の画像' })),
+    );
+  } else if (p.kind === 'product') {
+    const pc = (cc: Carousel) => cc.pages[i] as Extract<CarouselPage, { kind: 'product' }>;
+    body = h(
+      'div',
+      null,
+      field('見出し', textIn(p.title, (v) => edit((cc) => (pc(cc).title = v)), { placeholder: '美肌習慣、これだけは続けてる' })),
+      field('紹介文', textArea(p.body, (v) => edit((cc) => (pc(cc).body = v)), 4)),
+      field('前の値段など(打ち消し線)', textIn(p.priceBefore, (v) => edit((cc) => (pc(cc).priceBefore = v)))),
+      field('強調する一言(赤字)', textIn(p.priceAfter, (v) => edit((cc) => (pc(cc).priceAfter = v)))),
+      field('商品の画像', imageSlot(p.image, p.query, (im) => change((cc) => (pc(cc).image = im)), { category: '商品', aspectRatio: '3:4', title: '商品の画像' })),
     );
   } else {
     const pc = (cc: Carousel) => cc.pages[i] as Extract<CarouselPage, { kind: 'compare' }>;
@@ -236,7 +247,7 @@ function sidebar(): HTMLElement {
       for (const f of res.images) {
         const p = c.pages.find((x) => x.id === f.pageId);
         if (!p) continue;
-        if (p.kind === 'cover') p.image ??= f.image;
+        if (p.kind !== 'compare') p.image ??= f.image;
         else if (f.slot === 'left') p.left.image ??= f.image;
         else if (f.slot === 'right') p.right.image ??= f.image;
       }
@@ -328,7 +339,12 @@ function sidebar(): HTMLElement {
           h('div', { class: 'row gap wrap' }, h('a', { href: `/api/carousels/${c.id}/files/exports/${encodeURIComponent(lastExport.zip)}?download=1` }, 'ZIP をダウンロード'), button('フォルダを開く', () => void capi.reveal(c.id), { class: 'small' })),
         )
       : null,
-    button('＋ 比較ページを足す', () => addPage(), { class: 'small' }),
+    h(
+      'div',
+      { class: 'row gap' },
+      button('＋ 比較ページを足す', () => addPage(), { class: 'small' }),
+      button('＋ 商品ページを足す', () => change((cc) => cc.pages.push({ id: pageId(), kind: 'product', title: '', body: '', query: { q: '', kind: 'photo' }, priceBefore: '', priceAfter: '' })), { class: 'small' }),
+    ),
   );
 }
 

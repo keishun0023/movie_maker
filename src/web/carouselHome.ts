@@ -29,6 +29,7 @@ export const POLICY_OPTIONS = Object.entries(IMAGE_POLICY_LABELS) as [ImagePolic
 export const BACKGROUND_OPTIONS: [BackgroundPreset, string][] = [
   ['lavender', 'ラベンダー'],
   ['pink-water', 'ピンクの水面'],
+  ['pink', 'ピンクのグラデーション'],
   ['mint', 'ミント'],
   ['cream', 'クリーム'],
 ];

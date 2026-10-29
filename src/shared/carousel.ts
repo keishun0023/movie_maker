@@ -54,15 +54,34 @@ export interface ComparePage {
   right: CompareSide;
 }
 
-export type CarouselPage = CoverPage | ComparePage;
+/** 商品を紹介するページ(最後のページなど) */
+export interface ProductPage {
+  id: string;
+  kind: 'product';
+  /** 見出し(例: 美髪で人生変わる、ガチで) */
+  title: string;
+  /** 紹介文(数行) */
+  body: string;
+  query: ImageQuery;
+  image?: CarouselImage;
+  /** 打ち消し線で出す前の値段など(任意) */
+  priceBefore: string;
+  /** 赤く大きく出す一言(例: 今日限定 2,480円)(任意) */
+  priceAfter: string;
+}
 
-export type BackgroundPreset = 'lavender' | 'pink-water' | 'mint' | 'cream';
+export type CarouselPage = CoverPage | ComparePage | ProductPage;
+
+export type BackgroundPreset = 'lavender' | 'pink-water' | 'pink' | 'mint' | 'cream';
 
 export interface CarouselStyle {
   /** 左右の見出し: marks は ✖/〇 の記号、words は文字(例: ドブス/爆美女) */
   heads: 'marks' | 'words';
   leftWord: string;
   rightWord: string;
+  /** 文字の見出しの色(省略時は黒) */
+  leftColor?: string;
+  rightColor?: string;
   background: BackgroundPreset;
   /** 背景に使う画像(あればプリセットより優先) */
   backgroundImage?: CarouselImage;
@@ -118,6 +137,8 @@ export interface CarouselFormat {
   heads: CarouselStyle['heads'];
   leftWord: string;
   rightWord: string;
+  leftColor?: string;
+  rightColor?: string;
   background: BackgroundPreset;
   /** 素材ライブラリの素材ID */
   backgroundImageId?: string;
@@ -234,7 +255,7 @@ export function captionText(c: Pick<Carousel, 'caption' | 'hashtags'>): string {
 export function carouselImages(c: Carousel): CarouselImage[] {
   const out: CarouselImage[] = [];
   for (const p of c.pages) {
-    if (p.kind === 'cover') {
+    if (p.kind !== 'compare') {
       if (p.image) out.push(p.image);
     } else {
       if (p.left.image) out.push(p.left.image);
@@ -271,6 +292,8 @@ export function applyFormat(c: Carousel, f: CarouselFormat, images: { background
       heads: f.heads,
       leftWord: f.leftWord,
       rightWord: f.rightWord,
+      ...(f.leftColor ? { leftColor: f.leftColor } : {}),
+      ...(f.rightColor ? { rightColor: f.rightColor } : {}),
       background: f.background,
       backgroundImage: images.backgroundImage,
       leftCharacter: images.leftCharacter,
