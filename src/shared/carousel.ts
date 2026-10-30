@@ -39,6 +39,8 @@ export interface CoverPage {
   title: string;
   query: ImageQuery;
   image?: CarouselImage;
+  /** 見出しを置く高さ(0=上端〜1=下端。省略時は 0.46)。写真の顔に文字がかからないように動かす */
+  titleY?: number;
 }
 
 export interface ComparePage {

@@ -240,7 +240,7 @@ function drawCover(ctx: Ctx, c: Carousel, p: CoverPage) {
   const photo = img(c.id, p.image);
   if (photo) drawImageFit(ctx, photo, 0, 0, W, H, 'cover');
   else drawBackground(ctx, c);
-  let y = H * 0.46;
+  let y = H * Math.max(0.05, Math.min(0.85, p.titleY ?? 0.46));
   if (p.kicker) {
     const { lines, size } = fitLines(ctx, `＼${p.kicker}／`, W - 140, 52, 32, 1, (s) => textFont(s));
     ctx.save();

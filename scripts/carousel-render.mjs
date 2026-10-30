@@ -15,7 +15,7 @@
 //   "style": { "heads": "marks" | "words", "leftWord": "ドブス", "rightWord": "爆美女",
 //              "background": "lavender" | "pink-water" | "mint" | "cream",
 //              "backgroundImage": "bg.jpg", "leftCharacter": "bad.png", "rightCharacter": "good.png" },
-//   "cover": { "kicker": "皮膚科行く前にこれみて‼️", "title": "ニキビがガチで消えた神習慣", "image": "face.jpg" },
+//   "cover": { "kicker": "皮膚科行く前にこれみて‼️", "title": "ニキビがガチで消えた神習慣", "image": "face.jpg", "titleY": 0.46(見出しの高さ 0〜1。省略可) },
 //   "pages": [ { "label": "", "title": "顔の毛", "subtitle": "",
 //                "left": { "text": "ボーボー", "note": "", "image": "a.jpg" },
 //                "right": { "text": "ツルツル", "note": "", "image": "b.jpg" } } ],
@@ -118,7 +118,7 @@ try {
     rightCharacter: await upload(st.rightCharacter),
   };
   const cov = spec.cover ?? {};
-  c.pages = [{ id: 'p0', kind: 'cover', kicker: cov.kicker ?? '', title: cov.title ?? '', query: query(cov), image: await upload(cov.image) }];
+  c.pages = [{ id: 'p0', kind: 'cover', kicker: cov.kicker ?? '', title: cov.title ?? '', query: query(cov), image: await upload(cov.image), ...(typeof cov.titleY === 'number' ? { titleY: cov.titleY } : {}) }];
   for (const [i, p] of (spec.pages ?? []).entries()) {
     if (p.kind === 'product') {
       c.pages.push({ id: `p${i + 1}`, kind: 'product', title: p.title ?? '', body: p.body ?? '', query: query(p), image: await upload(p.image), priceBefore: p.priceBefore ?? '', priceAfter: p.priceAfter ?? '' });
